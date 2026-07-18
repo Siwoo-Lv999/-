@@ -4,3 +4,6 @@
 *.pyc
 data/
 *.db
+*.db-shm
+*.db-wal
+logs/
