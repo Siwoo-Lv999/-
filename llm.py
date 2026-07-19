@@ -9,6 +9,7 @@ import aiohttp
 from config import (
     MAX_CONCURRENT_LLM_REQUESTS,
     OLLAMA_BASE_URL,
+    OLLAMA_KEEP_ALIVE,
     OLLAMA_MODEL,
     OLLAMA_NUM_CTX,
     OLLAMA_TIMEOUT_SECONDS,
@@ -33,6 +34,17 @@ class LlmResponseError(Exception):
 
 EMOJI_PATTERN = re.compile(
     "[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]"
+)
+DANGLING_HONORIFIC_PATTERN = re.compile(
+    r"(?<!\S)(께서는|께서|께도|께만|께)(?=\s|[,.?!]|$)"
+)
+CUSTOMER_SERVICE_TONE_PATTERNS = (
+    "그런 표현은 사용하지 않는 게 좋",
+    "불편함을 느끼실 수",
+    "어떤 부분 때문에 실망",
+    "말씀해주시면 감사",
+    "말씀해 주시면 감사",
+    "편안하고 즐거운 대화",
 )
 DISCORD_TOKEN_PATTERN = re.compile(
     r"\b(?:mfa\.[A-Za-z0-9_-]{20,}|"
@@ -146,6 +158,15 @@ def find_style_example(user_message: str) -> dict[str, object] | None:
 
 def normalize_persona_reply(reply: str) -> str:
     reply = EMOJI_PATTERN.sub("", reply)
+    reply = re.sub(
+        r"(저는|제가)\s+(?:께서는|께서)\s+",
+        r"\1 ",
+        reply,
+    )
+    reply = DANGLING_HONORIFIC_PATTERN.sub(
+        lambda match: f"선생님{match.group(1)}",
+        reply,
+    )
 
     if "선생님" not in reply:
         reply = f"선생님, {reply}"
@@ -154,6 +175,46 @@ def normalize_persona_reply(reply: str) -> str:
     reply = re.sub(r",\s*([,.?!])", r"\1", reply)
     reply = re.sub(r" {2,}", " ", reply)
     return reply.strip()
+
+
+def needs_persona_rewrite(reply: str) -> bool:
+    return bool(DANGLING_HONORIFIC_PATTERN.search(reply)) or any(
+        phrase in reply for phrase in CUSTOMER_SERVICE_TONE_PATTERNS
+    )
+
+
+async def rewrite_persona_reply(
+    messages: list[dict[str, str]],
+    draft_reply: str,
+) -> str:
+    rewrite_messages = [
+        *messages,
+        {"role": "assistant", "content": draft_reply},
+        {
+            "role": "user",
+            "content": (
+                "방금 답변은 한국어 조사나 케이의 말투가 어색합니다. "
+                "내용에 직접 반응하는 자연스러운 답변으로 다시 작성하세요. "
+                "선생님 호칭을 한 번 온전하게 사용하고, 호칭 없는 '께서'나 "
+                "'께서는'을 쓰지 마세요. 가벼운 욕설이나 놀림에는 상담원처럼 "
+                "훈계하지 말고 새침하게 발끈하세요. 1~3문장만 출력하세요."
+            ),
+        },
+    ]
+    return await _request_ollama(
+        {
+            "model": OLLAMA_MODEL,
+            "messages": rewrite_messages,
+            "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "options": {
+                "num_ctx": OLLAMA_NUM_CTX,
+                "num_predict": 160,
+                "temperature": 0.1,
+                "top_p": 0.8,
+            },
+        }
+    )
 
 
 def select_direct_reply(style_example: dict[str, object]) -> str:
@@ -188,14 +249,16 @@ def redact_sensitive_information(content: str) -> str:
     )
 
 
-async def _request_ollama(payload: dict[str, object]) -> str:
+async def _post_ollama(
+    endpoint: str, payload: dict[str, object]
+) -> dict[str, object]:
     timeout = aiohttp.ClientTimeout(total=OLLAMA_TIMEOUT_SECONDS)
 
     try:
         async with _llm_request_semaphore:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
-                    f"{OLLAMA_BASE_URL}/api/chat", json=payload
+                    f"{OLLAMA_BASE_URL}{endpoint}", json=payload
                 ) as response:
                     if response.status != 200:
                         detail = (await response.text())[:200]
@@ -208,10 +271,29 @@ async def _request_ollama(payload: dict[str, object]) -> str:
     except aiohttp.ClientError as error:
         raise LlmConnectionError("Ollama에 연결할 수 없습니다.") from error
 
+    if not isinstance(data, dict):
+        raise LlmResponseError("Ollama가 올바르지 않은 응답을 반환했습니다.")
+    return data
+
+
+async def _request_ollama(payload: dict[str, object]) -> str:
+    data = await _post_ollama("/api/chat", payload)
     content = data.get("message", {}).get("content", "").strip()
     if not content:
         raise LlmResponseError("Ollama가 빈 응답을 반환했습니다.")
     return content
+
+
+async def warm_up_model() -> None:
+    await _post_ollama(
+        "/api/generate",
+        {
+            "model": OLLAMA_MODEL,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+        },
+    )
 
 
 async def generate_reply(
@@ -284,7 +366,7 @@ async def generate_reply(
         "model": OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
-        "keep_alive": "30m",
+        "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
             "num_predict": 128 if style_example else 384,
@@ -293,6 +375,12 @@ async def generate_reply(
         },
     }
     reply = await _request_ollama(payload)
+    if needs_persona_rewrite(reply):
+        print("LLM 말투 이상을 감지해 답변을 한 번 다시 생성합니다.")
+        try:
+            reply = await rewrite_persona_reply(messages, reply)
+        except (LlmConnectionError, LlmTimeoutError, LlmResponseError) as error:
+            print(f"LLM 말투 보정 재생성 오류: {error}")
     return normalize_persona_reply(reply)
 
 
@@ -320,7 +408,7 @@ async def summarize_conversation(
             {"role": "user", "content": summary_input},
         ],
         "stream": False,
-        "keep_alive": "30m",
+        "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
             "num_predict": 256,
@@ -356,7 +444,7 @@ async def extract_memory_candidates(
         ],
         "stream": False,
         "format": "json",
-        "keep_alive": "30m",
+        "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
             "num_predict": 256,

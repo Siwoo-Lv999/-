@@ -5,9 +5,11 @@ import discord
 from discord import app_commands
 
 from config import (
+    CONVERSATION_MAINTENANCE_DELAY_SECONDS,
     CONVERSATION_RETENTION_DAYS,
     DISCORD_TOKEN,
     IGNORE_BOT_MESSAGES,
+    OLLAMA_WARMUP_ON_START,
     USER_COOLDOWN_SECONDS,
 )
 from llm import (
@@ -17,6 +19,7 @@ from llm import (
     extract_memory_candidates,
     generate_reply,
     summarize_conversation,
+    warm_up_model,
 )
 from moderation import check_message
 from storage import (
@@ -40,10 +43,17 @@ from storage import (
 
 EMPTY_MESSAGE_REPLY = "무엇을 도와드릴까요, 선생님?"
 CONNECTION_ERROR_REPLY = (
-    "현재 언어 모델에 연결할 수 없습니다.\nOllama가 실행 중인지 확인해 주세요."
+    "지금은 답변을 제대로 준비할 수 없네요, 선생님. "
+    "잠시 뒤에 다시 말씀해 주세요."
 )
-TIMEOUT_ERROR_REPLY = "답변 생성 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요."
-RESPONSE_ERROR_REPLY = "답변을 생성하는 중 문제가 발생했습니다."
+TIMEOUT_ERROR_REPLY = (
+    "생각을 정리하는 데 너무 오래 걸렸네요, 선생님. "
+    "잠시 뒤에 다시 시도해 주세요."
+)
+RESPONSE_ERROR_REPLY = (
+    "답변을 만들다가 문제가 생겼습니다, 선생님. "
+    "잠시 뒤에 다시 말씀해 주세요."
+)
 DISCORD_MESSAGE_LIMIT = 2000
 COOLDOWN_REPLY = "조금만 기다렸다가 다시 말씀해 주세요, 선생님."
 
@@ -68,7 +78,15 @@ conversation_memory_group = app_commands.Group(
 commands_synced = False
 last_message_times: dict[int, float] = {}
 user_operation_locks: dict[int, asyncio.Lock] = {}
+user_data_versions: dict[int, int] = {}
 retention_cleanup_task: asyncio.Task[None] | None = None
+ollama_warmup_task: asyncio.Task[None] | None = None
+conversation_maintenance_task: asyncio.Task[None] | None = None
+conversation_maintenance_queue: asyncio.Queue[tuple[str, int, int]] = (
+    asyncio.Queue()
+)
+queued_maintenance_sessions: set[str] = set()
+maintenance_not_before: dict[str, float] = {}
 
 
 def get_user_operation_lock(user_id: int) -> asyncio.Lock:
@@ -159,6 +177,9 @@ async def reset_conversation(interaction: discord.Interaction) -> None:
 
     try:
         async with get_user_operation_lock(interaction.user.id):
+            user_data_versions[interaction.user.id] = (
+                user_data_versions.get(interaction.user.id, 0) + 1
+            )
             deleted_count = await delete_user_conversations(interaction.user.id)
     except ConversationStorageError as error:
         print(f"대화 초기화 오류: {error}")
@@ -379,7 +400,10 @@ command_tree.add_command(conversation_group)
 
 @client.event
 async def on_ready() -> None:
-    global commands_synced, retention_cleanup_task
+    global commands_synced
+    global conversation_maintenance_task
+    global ollama_warmup_task
+    global retention_cleanup_task
 
     if not commands_synced:
         try:
@@ -391,6 +415,24 @@ async def on_ready() -> None:
             print(f"슬래시 명령어를 동기화했습니다: {len(synced_commands)}개")
 
     print(f"Discord에 로그인했습니다: {client.user}")
+
+    if (
+        OLLAMA_WARMUP_ON_START
+        and (ollama_warmup_task is None or ollama_warmup_task.done())
+    ):
+        ollama_warmup_task = asyncio.create_task(
+            run_ollama_warmup(),
+            name="ollama-model-warmup",
+        )
+
+    if (
+        conversation_maintenance_task is None
+        or conversation_maintenance_task.done()
+    ):
+        conversation_maintenance_task = asyncio.create_task(
+            run_conversation_maintenance_worker(),
+            name="conversation-maintenance",
+        )
 
     if (
         CONVERSATION_RETENTION_DAYS > 0
@@ -412,6 +454,159 @@ async def run_retention_cleanup() -> None:
             await purge_expired_records()
         except ConversationStorageError as error:
             print(f"대화 보존 기간 정리 오류: {error}")
+
+
+async def run_ollama_warmup() -> None:
+    started_at = time.perf_counter()
+    try:
+        await warm_up_model()
+    except (LlmConnectionError, LlmTimeoutError, LlmResponseError) as error:
+        print(f"Ollama 모델 예열 오류: {error}")
+    else:
+        elapsed = time.perf_counter() - started_at
+        print(f"Ollama 모델 예열 완료: {elapsed:.2f}초")
+
+
+def schedule_conversation_maintenance(
+    session_key: str,
+    user_id: int,
+) -> None:
+    maintenance_not_before[session_key] = (
+        time.monotonic() + CONVERSATION_MAINTENANCE_DELAY_SECONDS
+    )
+    if session_key in queued_maintenance_sessions:
+        return
+
+    queued_maintenance_sessions.add(session_key)
+    conversation_maintenance_queue.put_nowait(
+        (session_key, user_id, user_data_versions.get(user_id, 0))
+    )
+
+
+async def wait_for_conversation_idle(session_key: str) -> None:
+    while True:
+        delay = maintenance_not_before.get(session_key, 0) - time.monotonic()
+        if delay <= 0:
+            return
+        await asyncio.sleep(delay)
+
+
+async def maintain_conversation(
+    session_key: str,
+    user_id: int,
+    data_version: int,
+) -> None:
+    if data_version != user_data_versions.get(user_id, 0):
+        return
+
+    try:
+        session_record = await get_session_record(session_key)
+    except ConversationStorageError as error:
+        print(f"백그라운드 대화 조회 오류: {error}")
+        return
+
+    raw_summary = session_record.get("summary", "")
+    current_summary = raw_summary if isinstance(raw_summary, str) else ""
+
+    while data_version == user_data_versions.get(user_id, 0):
+        try:
+            messages_to_summarize = await get_messages_to_summarize(
+                session_key
+            )
+        except ConversationStorageError as error:
+            print(f"백그라운드 요약 대화 조회 오류: {error}")
+            return
+
+        if not messages_to_summarize:
+            return
+
+        await wait_for_conversation_idle(session_key)
+        if data_version != user_data_versions.get(user_id, 0):
+            return
+
+        try:
+            next_summary = await summarize_conversation(
+                current_summary,
+                messages_to_summarize,
+            )
+        except (
+            LlmConnectionError,
+            LlmTimeoutError,
+            LlmResponseError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            print(f"백그라운드 대화 요약 오류: {error}")
+            return
+
+        await wait_for_conversation_idle(session_key)
+        if data_version != user_data_versions.get(user_id, 0):
+            return
+
+        try:
+            memory_candidates = await extract_memory_candidates(
+                messages_to_summarize
+            )
+        except (LlmConnectionError, LlmTimeoutError, LlmResponseError) as error:
+            print(f"백그라운드 장기 기억 후보 추출 오류: {error}")
+            memory_candidates = []
+
+        message_ids = [int(item["id"]) for item in messages_to_summarize]
+        try:
+            async with get_user_operation_lock(user_id):
+                if data_version != user_data_versions.get(user_id, 0):
+                    return
+                await store_summary_and_delete_messages(
+                    session_key,
+                    next_summary,
+                    message_ids,
+                )
+                await save_memory_candidates(user_id, memory_candidates)
+        except (
+            ConversationStorageError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            print(f"백그라운드 대화 정리 저장 오류: {error}")
+            return
+
+        current_summary = next_summary
+
+
+async def run_conversation_maintenance_worker() -> None:
+    while not client.is_closed():
+        session_key, user_id, data_version = (
+            await conversation_maintenance_queue.get()
+        )
+        was_cancelled = False
+        try:
+            await maintain_conversation(session_key, user_id, data_version)
+        except asyncio.CancelledError:
+            was_cancelled = True
+            raise
+        except Exception as error:
+            print(f"백그라운드 대화 정리 오류: {error}")
+        finally:
+            conversation_maintenance_queue.task_done()
+            queued_maintenance_sessions.discard(session_key)
+
+            if not was_cancelled and not client.is_closed():
+                try:
+                    pending_messages = await get_messages_to_summarize(
+                        session_key
+                    )
+                except ConversationStorageError as error:
+                    print(f"백그라운드 대화 재확인 오류: {error}")
+                else:
+                    if pending_messages:
+                        schedule_conversation_maintenance(
+                            session_key,
+                            user_id,
+                        )
+                    elif session_key not in queued_maintenance_sessions:
+                        maintenance_not_before.pop(session_key, None)
 
 
 async def process_conversation_message(
@@ -466,6 +661,7 @@ async def process_conversation_message(
         ]
 
     generated_reply: str | None = None
+    llm_started_at = time.perf_counter()
     async with message.channel.typing():
         try:
             generated_reply = await generate_reply(
@@ -484,6 +680,9 @@ async def process_conversation_message(
         except LlmResponseError as error:
             print(f"Ollama 응답 오류: {error}")
             reply = RESPONSE_ERROR_REPLY
+        finally:
+            elapsed = time.perf_counter() - llm_started_at
+            print(f"LLM 응답 처리 시간: {elapsed:.2f}초")
 
         await send_reply(message, reply)
 
@@ -503,56 +702,11 @@ async def process_conversation_message(
         print(f"대화 저장 오류: {error}")
         return
 
-    current_summary = conversation_summary
-    while messages_to_summarize:
-        try:
-            current_summary = await summarize_conversation(
-                current_summary,
-                messages_to_summarize,
-            )
-            message_ids = [
-                int(item["id"]) for item in messages_to_summarize
-            ]
-            await store_summary_and_delete_messages(
-                session_key,
-                current_summary,
-                message_ids,
-            )
-        except (
-            LlmConnectionError,
-            LlmTimeoutError,
-            LlmResponseError,
-            ConversationStorageError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ) as error:
-            print(f"대화 요약 오류: {error}")
-            return
-
-        try:
-            memory_candidates = await extract_memory_candidates(
-                messages_to_summarize
-            )
-            await save_memory_candidates(
-                message.author.id,
-                memory_candidates,
-            )
-        except (
-            LlmConnectionError,
-            LlmTimeoutError,
-            LlmResponseError,
-            ConversationStorageError,
-        ) as error:
-            print(f"장기 기억 후보 추출 오류: {error}")
-
-        try:
-            messages_to_summarize = await get_messages_to_summarize(
-                session_key
-            )
-        except ConversationStorageError as error:
-            print(f"요약 대화 조회 오류: {error}")
-            return
+    if messages_to_summarize:
+        schedule_conversation_maintenance(
+            session_key,
+            message.author.id,
+        )
 
 
 @client.event

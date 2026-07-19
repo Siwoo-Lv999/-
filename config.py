@@ -22,11 +22,26 @@ def read_bool_environment(name: str, default: bool) -> bool:
     raise RuntimeError(f"{name}은 true 또는 false여야 합니다.")
 
 
+def read_keep_alive_environment() -> int | str:
+    raw_value = os.getenv("OLLAMA_KEEP_ALIVE", "-1").strip()
+    if not raw_value:
+        raise RuntimeError("OLLAMA_KEEP_ALIVE는 비어 있을 수 없습니다.")
+
+    try:
+        return int(raw_value)
+    except ValueError:
+        return raw_value
+
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OLLAMA_BASE_URL = os.getenv(
     "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
 ).rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b").strip()
+OLLAMA_KEEP_ALIVE = read_keep_alive_environment()
+OLLAMA_WARMUP_ON_START = read_bool_environment(
+    "OLLAMA_WARMUP_ON_START", True
+)
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "data/bot.db"))
 if not DATABASE_PATH.is_absolute():
     DATABASE_PATH = PROJECT_ROOT / DATABASE_PATH
@@ -52,6 +67,14 @@ try:
 except ValueError as error:
     raise RuntimeError("USER_COOLDOWN_SECONDS는 숫자여야 합니다.") from error
 try:
+    CONVERSATION_MAINTENANCE_DELAY_SECONDS = float(
+        os.getenv("CONVERSATION_MAINTENANCE_DELAY_SECONDS", "5")
+    )
+except ValueError as error:
+    raise RuntimeError(
+        "CONVERSATION_MAINTENANCE_DELAY_SECONDS는 숫자여야 합니다."
+    ) from error
+try:
     CONVERSATION_RETENTION_DAYS = int(
         os.getenv("CONVERSATION_RETENTION_DAYS", "0")
     )
@@ -72,6 +95,11 @@ if OLLAMA_NUM_CTX < 2048:
 
 if USER_COOLDOWN_SECONDS < 0:
     raise RuntimeError("USER_COOLDOWN_SECONDS는 0 이상의 숫자여야 합니다.")
+
+if CONVERSATION_MAINTENANCE_DELAY_SECONDS < 0:
+    raise RuntimeError(
+        "CONVERSATION_MAINTENANCE_DELAY_SECONDS는 0 이상의 숫자여야 합니다."
+    )
 
 if CONVERSATION_RETENTION_DAYS < 0:
     raise RuntimeError(
