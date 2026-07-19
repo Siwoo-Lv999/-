@@ -59,7 +59,7 @@ try:
 except ValueError as error:
     raise RuntimeError("OLLAMA_TIMEOUT_SECONDS는 정수여야 합니다.") from error
 try:
-    OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
+    OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "2048"))
 except ValueError as error:
     raise RuntimeError("OLLAMA_NUM_CTX는 정수여야 합니다.") from error
 try:

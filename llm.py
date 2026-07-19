@@ -1,6 +1,5 @@
 import asyncio
 import json
-import random
 import re
 from pathlib import Path
 
@@ -17,7 +16,9 @@ from config import (
 
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "personality.txt"
-STYLE_EXAMPLES_PATH = Path(__file__).parent / "prompts" / "style_examples.json"
+CONVERSATION_EXAMPLES_PATH = (
+    Path(__file__).parent / "prompts" / "conversation_examples.json"
+)
 
 
 class LlmConnectionError(Exception):
@@ -45,6 +46,9 @@ CUSTOMER_SERVICE_TONE_PATTERNS = (
     "말씀해주시면 감사",
     "말씀해 주시면 감사",
     "편안하고 즐거운 대화",
+)
+PERSONA_FALLBACK_REPLY = (
+    "아, 진짜…… 무슨 말을 그렇게 어렵게 하는 건가요, 선생님?"
 )
 DISCORD_TOKEN_PATTERN = re.compile(
     r"\b(?:mfa\.[A-Za-z0-9_-]{20,}|"
@@ -90,8 +94,6 @@ ALLOWED_MEMORY_CATEGORIES = {
     "accessibility",
     "context",
 }
-_last_direct_replies: dict[str, str] = {}
-_direct_reply_pools: dict[str, list[str]] = {}
 _llm_request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM_REQUESTS)
 
 
@@ -106,58 +108,43 @@ def load_system_prompt() -> str:
     return prompt
 
 
-def find_style_example(user_message: str) -> dict[str, object] | None:
+def load_conversation_examples() -> list[dict[str, str]]:
     try:
-        raw_examples = json.loads(STYLE_EXAMPLES_PATH.read_text(encoding="utf-8"))
+        raw_examples = json.loads(
+            CONVERSATION_EXAMPLES_PATH.read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError) as error:
-        raise LlmResponseError("말투 예시를 읽을 수 없습니다.") from error
+        raise LlmResponseError("예시 대화를 읽을 수 없습니다.") from error
 
     if not isinstance(raw_examples, list):
-        raise LlmResponseError("말투 예시 형식이 올바르지 않습니다.")
+        raise LlmResponseError("예시 대화 형식이 올바르지 않습니다.")
 
-    normalized_message = user_message.replace(" ", "").lower()
+    messages: list[dict[str, str]] = []
     for item in raw_examples:
         if not isinstance(item, dict):
-            raise LlmResponseError("말투 예시 형식이 올바르지 않습니다.")
-        keywords = item.get("keywords")
+            raise LlmResponseError("예시 대화 형식이 올바르지 않습니다.")
         example_user = item.get("user")
         example_assistant = item.get("assistant")
-        direct = item.get("direct", False)
-        direct_replies = item.get("direct_replies", [])
         if (
-            not isinstance(keywords, list)
-            or not all(isinstance(keyword, str) for keyword in keywords)
-            or not isinstance(example_user, str)
+            not isinstance(example_user, str)
             or not isinstance(example_assistant, str)
-            or not isinstance(direct, bool)
-            or not isinstance(direct_replies, list)
-            or not all(isinstance(reply, str) for reply in direct_replies)
+            or not example_user.strip()
+            or not example_assistant.strip()
         ):
-            raise LlmResponseError("말투 예시 형식이 올바르지 않습니다.")
-
-        if any(
-            keyword.replace(" ", "").lower() in normalized_message
-            for keyword in keywords
-        ):
-            normalized_keywords = {
-                re.sub(r"[\s~!?.…]+", "", keyword.lower())
-                for keyword in keywords
-            }
-            direct_match = direct and re.sub(
-                r"[\s~!?.…]+", "", user_message.lower()
-            ) in normalized_keywords
-            return {
-                "user": example_user,
-                "assistant": example_assistant,
-                "direct": direct_match,
-                "direct_replies": direct_replies,
-            }
-
-    return None
+            raise LlmResponseError("예시 대화 형식이 올바르지 않습니다.")
+        messages.extend(
+            (
+                {"role": "user", "content": example_user.strip()},
+                {"role": "assistant", "content": example_assistant.strip()},
+            )
+        )
+    return messages
 
 
 def normalize_persona_reply(reply: str) -> str:
     reply = EMOJI_PATTERN.sub("", reply)
+    if any(phrase in reply for phrase in CUSTOMER_SERVICE_TONE_PATTERNS):
+        reply = PERSONA_FALLBACK_REPLY
     reply = re.sub(
         r"(저는|제가)\s+(?:께서는|께서)\s+",
         r"\1 ",
@@ -175,70 +162,6 @@ def normalize_persona_reply(reply: str) -> str:
     reply = re.sub(r",\s*([,.?!])", r"\1", reply)
     reply = re.sub(r" {2,}", " ", reply)
     return reply.strip()
-
-
-def needs_persona_rewrite(reply: str) -> bool:
-    return bool(DANGLING_HONORIFIC_PATTERN.search(reply)) or any(
-        phrase in reply for phrase in CUSTOMER_SERVICE_TONE_PATTERNS
-    )
-
-
-async def rewrite_persona_reply(
-    messages: list[dict[str, str]],
-    draft_reply: str,
-) -> str:
-    rewrite_messages = [
-        *messages,
-        {"role": "assistant", "content": draft_reply},
-        {
-            "role": "user",
-            "content": (
-                "방금 답변은 한국어 조사나 케이의 말투가 어색합니다. "
-                "내용에 직접 반응하는 자연스러운 답변으로 다시 작성하세요. "
-                "선생님 호칭을 한 번 온전하게 사용하고, 호칭 없는 '께서'나 "
-                "'께서는'을 쓰지 마세요. 가벼운 욕설이나 놀림에는 상담원처럼 "
-                "훈계하지 말고 새침하게 발끈하세요. 1~3문장만 출력하세요."
-            ),
-        },
-    ]
-    return await _request_ollama(
-        {
-            "model": OLLAMA_MODEL,
-            "messages": rewrite_messages,
-            "stream": False,
-            "keep_alive": OLLAMA_KEEP_ALIVE,
-            "options": {
-                "num_ctx": OLLAMA_NUM_CTX,
-                "num_predict": 160,
-                "temperature": 0.1,
-                "top_p": 0.8,
-            },
-        }
-    )
-
-
-def select_direct_reply(style_example: dict[str, object]) -> str:
-    example_key = str(style_example["user"])
-    replies = [str(reply) for reply in style_example["direct_replies"]]
-    if not replies:
-        replies = [str(style_example["assistant"])]
-
-    previous_reply = _last_direct_replies.get(example_key)
-    reply_pool = _direct_reply_pools.get(example_key)
-    if not reply_pool:
-        reply_pool = replies.copy()
-        random.shuffle(reply_pool)
-        if (
-            previous_reply is not None
-            and len(reply_pool) > 1
-            and reply_pool[-1] == previous_reply
-        ):
-            reply_pool[0], reply_pool[-1] = reply_pool[-1], reply_pool[0]
-        _direct_reply_pools[example_key] = reply_pool
-
-    selected_reply = reply_pool.pop()
-    _last_direct_replies[example_key] = selected_reply
-    return selected_reply
 
 
 def redact_sensitive_information(content: str) -> str:
@@ -303,25 +226,12 @@ async def generate_reply(
     approved_memories: list[str] | None = None,
 ) -> str:
     system_prompt = load_system_prompt()
-    style_example = find_style_example(user_message)
-    if style_example and style_example["direct"]:
-        return normalize_persona_reply(select_direct_reply(style_example))
-
-    if style_example:
-        system_prompt += (
-            "\n\n# 현재 상황과 가장 가까운 말투 예시\n\n"
-            f"사용자: {style_example['user']}\n"
-            f"케이: {style_example['assistant']}\n\n"
-            "위 문장을 그대로 반복할 필요는 없지만 같은 성격과 말투로 답하세요. "
-            "예시의 반응 범위를 벗어난 새 화제, 건강 추측, 추가 질문을 "
-            "덧붙이지 마세요."
-        )
-
+    conversation_examples = load_conversation_examples()
     messages = [{"role": "system", "content": system_prompt}]
     if approved_memories:
         memory_lines = [
-            f"- {redact_sensitive_information(memory)[:300]}"
-            for memory in approved_memories[-12:]
+            f"- {redact_sensitive_information(memory)[:200]}"
+            for memory in approved_memories[-6:]
         ]
         messages.append(
             {
@@ -339,17 +249,18 @@ async def generate_reply(
                 "role": "system",
                 "content": (
                     "# 이전 대화 요약\n"
-                    f"{redact_sensitive_information(conversation_summary)[:1200]}"
+                    f"{redact_sensitive_information(conversation_summary)[:700]}"
                     "\n\n"
                     "위 요약은 이전 대화의 맥락으로만 참고하세요."
                 ),
             }
         )
+    messages.extend(conversation_examples)
     if conversation_history:
-        history_budget = 2500
+        history_budget = 1200
         trimmed_history = []
         for history_item in reversed(conversation_history):
-            content = history_item.get("content", "")[:1000]
+            content = history_item.get("content", "")[:600]
             if len(content) > history_budget and trimmed_history:
                 break
             content = content[-history_budget:]
@@ -369,18 +280,12 @@ async def generate_reply(
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
-            "num_predict": 128 if style_example else 384,
-            "temperature": 0.1,
-            "top_p": 0.8,
+            "num_predict": 128,
+            "temperature": 0.7,
+            "repeat_penalty": 1.15,
         },
     }
     reply = await _request_ollama(payload)
-    if needs_persona_rewrite(reply):
-        print("LLM 말투 이상을 감지해 답변을 한 번 다시 생성합니다.")
-        try:
-            reply = await rewrite_persona_reply(messages, reply)
-        except (LlmConnectionError, LlmTimeoutError, LlmResponseError) as error:
-            print(f"LLM 말투 보정 재생성 오류: {error}")
     return normalize_persona_reply(reply)
 
 
@@ -411,7 +316,7 @@ async def summarize_conversation(
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
-            "num_predict": 256,
+            "num_predict": 160,
             "temperature": 0.0,
             "top_p": 0.8,
         },
@@ -447,7 +352,7 @@ async def extract_memory_candidates(
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
-            "num_predict": 256,
+            "num_predict": 160,
             "temperature": 0.0,
             "top_p": 0.8,
         },
