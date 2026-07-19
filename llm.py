@@ -48,7 +48,7 @@ CUSTOMER_SERVICE_TONE_PATTERNS = (
     "편안하고 즐거운 대화",
 )
 PERSONA_FALLBACK_REPLY = (
-    "아, 진짜…… 무슨 말을 그렇게 어렵게 하는 건가요, 선생님?"
+    "……말이 조금 이상하게 꼬였네요, 선생님. 방금 건 잊어 주세요."
 )
 DISCORD_TOKEN_PATTERN = re.compile(
     r"\b(?:mfa\.[A-Za-z0-9_-]{20,}|"
@@ -281,7 +281,7 @@ async def generate_reply(
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
             "num_predict": 128,
-            "temperature": 0.7,
+            "temperature": 0.45,
             "repeat_penalty": 1.15,
         },
     }
