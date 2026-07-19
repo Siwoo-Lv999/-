@@ -147,17 +147,7 @@ def find_style_example(user_message: str) -> dict[str, object] | None:
 def normalize_persona_reply(reply: str) -> str:
     reply = EMOJI_PATTERN.sub("", reply)
 
-    title_seen = False
-
-    def keep_first_title(_: re.Match[str]) -> str:
-        nonlocal title_seen
-        if title_seen:
-            return ""
-        title_seen = True
-        return "선생님"
-
-    reply = re.sub("선생님", keep_first_title, reply)
-    if not title_seen:
+    if "선생님" not in reply:
         reply = f"선생님, {reply}"
 
     reply = re.sub(r"\s+([,.?!])", r"\1", reply)
