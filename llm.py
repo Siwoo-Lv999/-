@@ -39,17 +39,6 @@ EMOJI_PATTERN = re.compile(
 DANGLING_HONORIFIC_PATTERN = re.compile(
     r"(?<!\S)(께서는|께서|께도|께만|께)(?=\s|[,.?!]|$)"
 )
-CUSTOMER_SERVICE_TONE_PATTERNS = (
-    "그런 표현은 사용하지 않는 게 좋",
-    "불편함을 느끼실 수",
-    "어떤 부분 때문에 실망",
-    "말씀해주시면 감사",
-    "말씀해 주시면 감사",
-    "편안하고 즐거운 대화",
-)
-PERSONA_FALLBACK_REPLY = (
-    "……말이 조금 이상하게 꼬였네요, 선생님. 방금 건 잊어 주세요."
-)
 DISCORD_TOKEN_PATTERN = re.compile(
     r"\b(?:mfa\.[A-Za-z0-9_-]{20,}|"
     r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,})\b"
@@ -143,8 +132,6 @@ def load_conversation_examples() -> list[dict[str, str]]:
 
 def normalize_persona_reply(reply: str) -> str:
     reply = EMOJI_PATTERN.sub("", reply)
-    if any(phrase in reply for phrase in CUSTOMER_SERVICE_TONE_PATTERNS):
-        reply = PERSONA_FALLBACK_REPLY
     reply = re.sub(
         r"(저는|제가)\s+(?:께서는|께서)\s+",
         r"\1 ",
@@ -281,7 +268,7 @@ async def generate_reply(
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
             "num_predict": 128,
-            "temperature": 0.45,
+            "temperature": 0.1,
             "repeat_penalty": 1.15,
         },
     }
