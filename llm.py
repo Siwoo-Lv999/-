@@ -270,7 +270,7 @@ async def generate_reply(
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
             "num_ctx": OLLAMA_NUM_CTX,
-            "num_predict": 128,
+            "num_predict": 96,
             "temperature": 0.1,
             "repeat_penalty": 1.15,
         },
