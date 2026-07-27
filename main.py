@@ -85,6 +85,7 @@ conversation_memory_group = app_commands.Group(
 github_group = app_commands.Group(
     name="github",
     description="GitHub 알림 설정을 관리합니다.",
+    guild_only=True,
 )
 github_channel_group = app_commands.Group(
     name="채널",
@@ -208,7 +209,6 @@ async def require_github_channel_permission(
     description="GitHub 저장소의 Push 알림 채널을 지정합니다.",
 )
 @app_commands.guild_only()
-@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(
     repository_name="GitHub 저장소 전체 이름(owner/repository)",
     channel="Push 알림을 받을 Discord 채널",
@@ -275,7 +275,6 @@ async def configure_github_channel(
     description="저장소별 Push 알림 채널 설정을 확인합니다.",
 )
 @app_commands.guild_only()
-@app_commands.default_permissions(manage_guild=True)
 async def show_github_channels(
     interaction: discord.Interaction,
 ) -> None:
@@ -308,7 +307,6 @@ async def show_github_channels(
     description="저장소별 채널 설정을 삭제하고 기본 채널을 사용합니다.",
 )
 @app_commands.guild_only()
-@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(
     repository_name="삭제할 GitHub 저장소 전체 이름(owner/repository)"
 )
