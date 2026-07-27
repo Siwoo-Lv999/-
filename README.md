@@ -35,6 +35,7 @@ DATABASE_PATH=data/bot.db
 USER_COOLDOWN_SECONDS=2
 IGNORE_BOT_MESSAGES=true
 MODERATION_CONFIG_PATH=config/moderation.yml
+AUTO_ROLES_PATH=config/auto_roles.yml
 CONVERSATION_RETENTION_DAYS=0
 GITHUB_WEBHOOK_ENABLED=false
 GITHUB_WEBHOOK_SECRET=
@@ -53,6 +54,7 @@ GITHUB_WEBHOOK_PORT=8080
 - `OLLAMA_WARMUP_ON_START`: 봇 로그인 직후 모델을 미리 불러올지 정합니다.
 - `IGNORE_BOT_MESSAGES`: 다른 봇의 메시지를 무시할지 정합니다. 자기 자신의 메시지는 이 설정과 관계없이 항상 무시합니다.
 - `MODERATION_CONFIG_PATH`: 대화 안전 필터 규칙 파일 경로입니다.
+- `AUTO_ROLES_PATH`: 서버별 자동 지급 역할 설정 파일 경로입니다.
 - `CONVERSATION_RETENTION_DAYS`: 대화 보존 일수입니다. `0`은 무기한이며 `7`, `30`처럼 설정할 수 있습니다.
 - `GITHUB_WEBHOOK_ENABLED`: GitHub 푸시 알림 서버를 켤지 정합니다.
 - `GITHUB_WEBHOOK_SECRET`: GitHub와 봇만 공유하는 Webhook 비밀키입니다.
@@ -80,11 +82,11 @@ ollama serve
 ## 4. Discord Developer Portal
 
 1. [Discord Developer Portal](https://discord.com/developers/applications)의 `Bot` 메뉴에서 봇 토큰을 발급합니다.
-2. `Privileged Gateway Intents`에서 `Message Content Intent`를 켭니다.
+2. `Privileged Gateway Intents`에서 `Message Content Intent`와 `Server Members Intent`를 켭니다.
 3. `OAuth2` > `URL Generator`에서 `bot` Scope를 선택합니다.
-4. `View Channels`, `Send Messages`, `Read Message History` 권한으로 테스트 서버에 초대합니다.
+4. `View Channels`, `Send Messages`, `Read Message History`, `Manage Roles` 권한으로 테스트 서버에 초대합니다.
 
-`Server Members Intent`와 `Presence Intent`는 현재 필요하지 않습니다.
+`Presence Intent`는 현재 필요하지 않습니다.
 
 ## 5. 실행
 
@@ -130,7 +132,19 @@ Discord에서 `/대화 초기화`를 실행하면 명령을 실행한 사용자�
 - 필터 규칙과 답변은 `config/moderation.yml`에서 수정할 수 있습니다.
 - 필터 로그는 `logs/moderation.log`에 시각과 분류만 기록하며 사용자 메시지 원문은 남기지 않습니다.
 
-## 9. GitHub 푸시 알림
+## 9. 새 멤버 역할 자동 지급
+
+서버에서 `역할 관리` 권한이 있는 사용자가 다음 명령으로 자동 지급 역할을 관리할 수 있습니다.
+
+- `/역할 자동지급 설정`: 역할 선택기에서 새 멤버에게 지급할 역할을 고릅니다.
+- `/역할 자동지급 확인`: 현재 설정된 역할을 확인합니다.
+- `/역할 자동지급 해제`: 역할 자동 지급을 끕니다.
+
+설정은 서버별로 분리되어 `config/auto_roles.yml`에 즉시 저장됩니다. 봇 계정에는 역할을 지급하지 않으며, `@everyone`, 연동 서비스가 관리하는 역할, 관리자 권한이 포함된 역할은 설정할 수 없습니다.
+
+Discord 서버 설정의 역할 목록에서 **봇의 역할을 자동 지급할 역할보다 위에 배치**해야 합니다. 또한 Developer Portal의 `Server Members Intent`와 봇 역할의 `역할 관리` 권한이 필요합니다. 설정 이후 새로 들어오는 사람부터 적용되며 기존 멤버에게는 소급 지급하지 않습니다.
+
+## 10. GitHub 푸시 알림
 
 GitHub가 공개 HTTPS 주소로 Webhook을 보내면, 봇이 서명을 확인한 뒤 지정한 Discord 채널에 저장소, 브랜치, 작성자와 최근 커밋을 임베드로 알립니다. `push` 외 이벤트는 무시하고, 같은 delivery ID가 다시 들어오면 중복 알림을 보내지 않습니다.
 

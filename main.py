@@ -4,6 +4,12 @@ import time
 import discord
 from discord import app_commands
 
+from auto_roles import (
+    get_auto_role_id,
+    initialize_auto_roles,
+    remove_auto_role,
+    set_auto_role,
+)
 from config import (
     CONVERSATION_RETENTION_DAYS,
     DISCORD_TOKEN,
@@ -59,11 +65,22 @@ COOLDOWN_REPLY = "조금만 기다렸다가 다시 말씀해 주세요, 선생�
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 client = discord.Client(intents=intents)
 command_tree = app_commands.CommandTree(client)
 conversation_group = app_commands.Group(
     name="대화", description="저장된 대화 기록을 관리합니다."
+)
+role_group = app_commands.Group(
+    name="역할",
+    description="서버 역할 설정을 관리합니다.",
+    guild_only=True,
+)
+auto_role_group = app_commands.Group(
+    name="자동지급",
+    description="새 멤버에게 지급할 역할을 관리합니다.",
+    parent=role_group,
 )
 github_group = app_commands.Group(
     name="github",
@@ -171,6 +188,166 @@ async def require_github_admin_permission(
         ephemeral=True,
     )
     return False
+
+
+async def require_role_manager_permission(
+    interaction: discord.Interaction,
+) -> bool:
+    member = interaction.user
+    if (
+        interaction.guild is not None
+        and isinstance(member, discord.Member)
+        and member.guild_permissions.manage_roles
+    ):
+        return True
+
+    await interaction.response.send_message(
+        "이 설정은 역할 관리 권한이 있는 사용자만 변경할 수 있습니다.",
+        ephemeral=True,
+    )
+    return False
+
+
+def validate_auto_role(
+    guild: discord.Guild,
+    actor: discord.Member,
+    role: discord.Role,
+) -> str | None:
+    bot_member = guild.me
+    if bot_member is None:
+        return "현재 서버의 봇 역할을 확인할 수 없습니다."
+    if role.is_default():
+        return "@everyone 역할은 자동 지급 역할로 설정할 수 없습니다."
+    if role.managed:
+        return "연동 서비스나 봇이 관리하는 역할은 자동 지급할 수 없습니다."
+    if (
+        role.permissions.administrator
+        or role.permissions.manage_guild
+        or role.permissions.manage_roles
+    ):
+        return "관리 권한이 포함된 역할은 자동 지급할 수 없습니다."
+    if not bot_member.guild_permissions.manage_roles:
+        return "봇에게 `역할 관리` 권한이 필요합니다."
+    if bot_member.top_role <= role:
+        return "지급할 역할을 봇의 가장 높은 역할보다 아래로 옮겨 주세요."
+    if actor.id != guild.owner_id and actor.top_role <= role:
+        return "본인의 가장 높은 역할보다 낮은 역할만 설정할 수 있습니다."
+    return None
+
+
+@auto_role_group.command(
+    name="설정",
+    description="새 멤버에게 자동으로 지급할 역할을 설정합니다.",
+)
+@app_commands.guild_only()
+@app_commands.describe(role="새 멤버에게 자동 지급할 역할")
+@app_commands.rename(role="역할")
+async def configure_auto_role(
+    interaction: discord.Interaction,
+    role: discord.Role,
+) -> None:
+    if not await require_role_manager_permission(interaction):
+        return
+
+    guild = interaction.guild
+    actor = interaction.user
+    if guild is None or not isinstance(actor, discord.Member):
+        await interaction.response.send_message(
+            "서버에서만 설정할 수 있습니다.",
+            ephemeral=True,
+        )
+        return
+
+    validation_error = validate_auto_role(guild, actor, role)
+    if validation_error is not None:
+        await interaction.response.send_message(
+            validation_error,
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await set_auto_role(guild.id, role.id)
+    except RuntimeError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"새로 들어오는 사람에게 {role.mention} 역할을 지급하겠습니다.",
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@auto_role_group.command(
+    name="확인",
+    description="현재 자동 지급 역할을 확인합니다.",
+)
+@app_commands.guild_only()
+async def show_auto_role(interaction: discord.Interaction) -> None:
+    if not await require_role_manager_permission(interaction):
+        return
+
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message(
+            "서버에서만 확인할 수 있습니다.",
+            ephemeral=True,
+        )
+        return
+
+    role_id = get_auto_role_id(guild.id)
+    if role_id is None:
+        result = "현재 자동 지급 역할이 설정되어 있지 않습니다."
+    else:
+        role = guild.get_role(role_id)
+        result = (
+            f"현재 자동 지급 역할은 {role.mention}입니다."
+            if role is not None
+            else (
+                f"설정된 역할(`{role_id}`)이 서버에서 삭제됐거나 "
+                "확인되지 않습니다."
+            )
+        )
+
+    await interaction.response.send_message(
+        result,
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@auto_role_group.command(
+    name="해제",
+    description="새 멤버 역할 자동 지급을 끕니다.",
+)
+@app_commands.guild_only()
+async def disable_auto_role(interaction: discord.Interaction) -> None:
+    if not await require_role_manager_permission(interaction):
+        return
+
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message(
+            "서버에서만 설정할 수 있습니다.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        changed = await remove_auto_role(guild.id)
+    except RuntimeError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    result = (
+        "역할 자동 지급을 해제했습니다."
+        if changed
+        else "현재 설정된 자동 지급 역할이 없습니다."
+    )
+    await interaction.followup.send(result, ephemeral=True)
 
 
 @github_channel_group.command(
@@ -496,6 +673,7 @@ async def reset_conversation(interaction: discord.Interaction) -> None:
 
 
 command_tree.add_command(conversation_group)
+command_tree.add_command(role_group)
 command_tree.add_command(github_group)
 
 
@@ -561,6 +739,51 @@ async def run_ollama_warmup() -> None:
     else:
         elapsed = time.perf_counter() - started_at
         print(f"Ollama 모델 예열 완료: {elapsed:.2f}초")
+
+
+@client.event
+async def on_member_join(member: discord.Member) -> None:
+    if member.bot:
+        return
+
+    role_id = get_auto_role_id(member.guild.id)
+    if role_id is None:
+        return
+
+    role = member.guild.get_role(role_id)
+    bot_member = member.guild.me
+    if role is None:
+        print(
+            f"자동 역할 지급 실패: 서버 {member.guild.id}에서 "
+            f"역할 {role_id}을 찾지 못했습니다."
+        )
+        return
+    if (
+        bot_member is None
+        or not bot_member.guild_permissions.manage_roles
+        or bot_member.top_role <= role
+    ):
+        print(
+            f"자동 역할 지급 실패: 서버 {member.guild.id}의 "
+            "봇 권한 또는 역할 순서를 확인해 주세요."
+        )
+        return
+
+    try:
+        await member.add_roles(
+            role,
+            reason="새 멤버 자동 역할 지급",
+        )
+    except discord.Forbidden:
+        print(
+            f"자동 역할 지급 거부: 서버 {member.guild.id}에서 "
+            f"역할 {role.id}을 지급할 권한이 없습니다."
+        )
+    except discord.HTTPException as error:
+        print(
+            f"자동 역할 지급 오류: 서버 {member.guild.id}, "
+            f"역할 {role.id}, {error}"
+        )
 
 
 async def process_conversation_message(
@@ -678,4 +901,5 @@ async def on_message(message: discord.Message) -> None:
 
 if __name__ == "__main__":
     initialize_database()
+    initialize_auto_roles()
     client.run(DISCORD_TOKEN)

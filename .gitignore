@@ -9,3 +9,4 @@ data/
 logs/
 config/github_channels.yml
 config/github_branches.yml
+config/auto_roles.yml
