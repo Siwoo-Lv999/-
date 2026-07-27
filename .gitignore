@@ -7,3 +7,4 @@ data/
 *.db-shm
 *.db-wal
 logs/
+config/github_channels.yml

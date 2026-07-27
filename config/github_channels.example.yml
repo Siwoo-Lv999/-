@@ -1,0 +1,3 @@
+# 저장소 전체 이름(owner/repository)을 Discord 채널 ID에 연결합니다.
+# 매핑되지 않은 저장소는 .env의 GITHUB_WEBHOOK_CHANNEL_ID를 사용합니다.
+repositories: {}

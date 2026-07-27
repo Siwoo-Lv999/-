@@ -74,6 +74,16 @@ GITHUB_WEBHOOK_CHANNEL_ID = read_optional_int_environment(
 GITHUB_WEBHOOK_HOST = os.getenv(
     "GITHUB_WEBHOOK_HOST", "127.0.0.1"
 ).strip()
+GITHUB_WEBHOOK_CHANNELS_PATH = Path(
+    os.getenv(
+        "GITHUB_WEBHOOK_CHANNELS_PATH",
+        "config/github_channels.yml",
+    )
+)
+if not GITHUB_WEBHOOK_CHANNELS_PATH.is_absolute():
+    GITHUB_WEBHOOK_CHANNELS_PATH = (
+        PROJECT_ROOT / GITHUB_WEBHOOK_CHANNELS_PATH
+    )
 
 try:
     OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))

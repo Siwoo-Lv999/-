@@ -3,13 +3,16 @@ from collections import deque
 import hashlib
 import hmac
 import json
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 import discord
+import yaml
 
 from config import (
     GITHUB_WEBHOOK_CHANNEL_ID,
+    GITHUB_WEBHOOK_CHANNELS_PATH,
     GITHUB_WEBHOOK_ENABLED,
     GITHUB_WEBHOOK_HOST,
     GITHUB_WEBHOOK_PORT,
@@ -29,6 +32,9 @@ DELIVERY_ORDER_KEY = web.AppKey("delivery_order", deque[str])
 NOTIFICATION_TASKS_KEY = web.AppKey(
     "notification_tasks", set[asyncio.Task[None]]
 )
+REPOSITORY_CHANNELS_KEY = web.AppKey(
+    "repository_channels", dict[str, int]
+)
 
 _runner: web.AppRunner | None = None
 
@@ -47,6 +53,101 @@ def verify_github_signature(
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(expected_signature, signature_header)
+
+
+def load_repository_channels(config_path: Path) -> dict[str, int]:
+    try:
+        raw_config = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        raise RuntimeError(
+            f"GitHub 채널 설정 파일을 읽지 못했습니다: {config_path}"
+        ) from error
+
+    try:
+        config_data = yaml.safe_load(raw_config)
+    except yaml.YAMLError as error:
+        raise RuntimeError(
+            f"GitHub 채널 설정 YAML이 올바르지 않습니다: {config_path}"
+        ) from error
+
+    if config_data is None:
+        return {}
+    if not isinstance(config_data, dict):
+        raise RuntimeError(
+            "GitHub 채널 설정의 최상위 값은 객체여야 합니다."
+        )
+
+    raw_repositories = config_data.get("repositories", {})
+    if not isinstance(raw_repositories, dict):
+        raise RuntimeError(
+            "GitHub 채널 설정의 repositories는 객체여야 합니다."
+        )
+
+    repository_channels: dict[str, int] = {}
+    for raw_name, raw_channel_id in raw_repositories.items():
+        if not isinstance(raw_name, str):
+            raise RuntimeError("GitHub 저장소 이름은 문자열이어야 합니다.")
+
+        repository_name = raw_name.strip()
+        repository_parts = repository_name.split("/")
+        if (
+            len(repository_parts) != 2
+            or not all(part.strip() for part in repository_parts)
+        ):
+            raise RuntimeError(
+                "GitHub 저장소 이름은 owner/repository 형식이어야 합니다: "
+                f"{repository_name or raw_name}"
+            )
+
+        if (
+            isinstance(raw_channel_id, int)
+            and not isinstance(raw_channel_id, bool)
+        ):
+            channel_id = raw_channel_id
+        elif (
+            isinstance(raw_channel_id, str)
+            and raw_channel_id.strip().isdigit()
+        ):
+            channel_id = int(raw_channel_id.strip())
+        else:
+            raise RuntimeError(
+                f"{repository_name}의 Discord 채널 ID는 정수여야 합니다."
+            )
+
+        if channel_id <= 0:
+            raise RuntimeError(
+                f"{repository_name}의 Discord 채널 ID가 올바르지 않습니다."
+            )
+
+        normalized_name = repository_name.casefold()
+        if normalized_name in repository_channels:
+            raise RuntimeError(
+                f"GitHub 저장소 설정이 중복되었습니다: {repository_name}"
+            )
+        repository_channels[normalized_name] = channel_id
+
+    return repository_channels
+
+
+def resolve_repository_channel_id(
+    payload: dict[str, Any],
+    repository_channels: dict[str, int],
+    default_channel_id: int | None,
+) -> int | None:
+    repository = payload.get("repository")
+    if not isinstance(repository, dict):
+        return default_channel_id
+
+    full_name = repository.get("full_name")
+    if not isinstance(full_name, str) or not full_name.strip():
+        return default_channel_id
+
+    return repository_channels.get(
+        full_name.strip().casefold(),
+        default_channel_id,
+    )
 
 
 def _remember_delivery(app: web.Application, delivery_id: str) -> bool:
@@ -209,14 +310,20 @@ async def _send_push_notification(
     client: discord.Client,
     payload: dict[str, Any],
     delivery_id: str,
+    repository_channels: dict[str, int],
 ) -> None:
-    if GITHUB_WEBHOOK_CHANNEL_ID is None:
+    channel_id = resolve_repository_channel_id(
+        payload,
+        repository_channels,
+        GITHUB_WEBHOOK_CHANNEL_ID,
+    )
+    if channel_id is None:
         return
 
     try:
-        channel = client.get_channel(GITHUB_WEBHOOK_CHANNEL_ID)
+        channel = client.get_channel(channel_id)
         if channel is None:
-            channel = await client.fetch_channel(GITHUB_WEBHOOK_CHANNEL_ID)
+            channel = await client.fetch_channel(channel_id)
 
         send = getattr(channel, "send", None)
         if send is None:
@@ -281,6 +388,7 @@ async def _handle_webhook(request: web.Request) -> web.Response:
             request.app[DISCORD_CLIENT_KEY],
             payload,
             delivery_id,
+            request.app[REPOSITORY_CHANNELS_KEY],
         ),
         name=f"github-push-{delivery_id}",
     )
@@ -293,6 +401,7 @@ async def _handle_webhook(request: web.Request) -> web.Response:
 def create_github_webhook_app(
     client: discord.Client,
     secret: str,
+    repository_channels: dict[str, int] | None = None,
 ) -> web.Application:
     app = web.Application(client_max_size=2 * 1024 * 1024)
     app[DISCORD_CLIENT_KEY] = client
@@ -300,6 +409,7 @@ def create_github_webhook_app(
     app[DELIVERY_IDS_KEY] = set()
     app[DELIVERY_ORDER_KEY] = deque()
     app[NOTIFICATION_TASKS_KEY] = set()
+    app[REPOSITORY_CHANNELS_KEY] = dict(repository_channels or {})
     app.router.add_get(HEALTH_PATH, _handle_health)
     app.router.add_post(WEBHOOK_PATH, _handle_webhook)
     return app
@@ -315,7 +425,14 @@ async def start_github_webhook_server(
     if _runner is not None:
         return _runner
 
-    app = create_github_webhook_app(client, GITHUB_WEBHOOK_SECRET)
+    repository_channels = load_repository_channels(
+        GITHUB_WEBHOOK_CHANNELS_PATH
+    )
+    app = create_github_webhook_app(
+        client,
+        GITHUB_WEBHOOK_SECRET,
+        repository_channels,
+    )
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
 
@@ -334,5 +451,9 @@ async def start_github_webhook_server(
     print(
         "GitHub Webhook 서버를 시작했습니다: "
         f"http://{GITHUB_WEBHOOK_HOST}:{GITHUB_WEBHOOK_PORT}{WEBHOOK_PATH}"
+    )
+    print(
+        "GitHub 저장소별 Discord 채널 설정을 불러왔습니다: "
+        f"{len(repository_channels)}개"
     )
     return runner

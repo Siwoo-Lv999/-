@@ -40,6 +40,7 @@ CONVERSATION_RETENTION_DAYS=0
 GITHUB_WEBHOOK_ENABLED=false
 GITHUB_WEBHOOK_SECRET=
 GITHUB_WEBHOOK_CHANNEL_ID=
+GITHUB_WEBHOOK_CHANNELS_PATH=config/github_channels.yml
 GITHUB_WEBHOOK_HOST=127.0.0.1
 GITHUB_WEBHOOK_PORT=8080
 ```
@@ -56,7 +57,8 @@ GITHUB_WEBHOOK_PORT=8080
 - `CONVERSATION_RETENTION_DAYS`: 대화 보존 일수입니다. `0`은 무기한이며 `7`, `30`처럼 설정할 수 있습니다.
 - `GITHUB_WEBHOOK_ENABLED`: GitHub 푸시 알림 서버를 켤지 정합니다.
 - `GITHUB_WEBHOOK_SECRET`: GitHub와 봇만 공유하는 Webhook 비밀키입니다.
-- `GITHUB_WEBHOOK_CHANNEL_ID`: 푸시 알림을 받을 Discord 채널 ID입니다.
+- `GITHUB_WEBHOOK_CHANNEL_ID`: 저장소별 설정이 없을 때 사용할 기본 Discord 채널 ID입니다.
+- `GITHUB_WEBHOOK_CHANNELS_PATH`: 저장소별 Discord 채널 설정 파일 경로입니다.
 - `GITHUB_WEBHOOK_HOST`, `GITHUB_WEBHOOK_PORT`: 로컬 Webhook 수신 주소입니다.
 
 ## 3. Ollama 준비
@@ -152,6 +154,7 @@ Discord에서 `사용자 설정` > `고급` > `개발자 모드`를 켠 뒤, 알
 GITHUB_WEBHOOK_ENABLED=true
 GITHUB_WEBHOOK_SECRET=방금_만든_비밀키
 GITHUB_WEBHOOK_CHANNEL_ID=복사한_Discord_채널_ID
+GITHUB_WEBHOOK_CHANNELS_PATH=config/github_channels.yml
 GITHUB_WEBHOOK_HOST=127.0.0.1
 GITHUB_WEBHOOK_PORT=8080
 ```
@@ -165,6 +168,33 @@ curl http://127.0.0.1:8080/github/health
 ```
 
 정상이면 마지막 명령에 `{"status": "ok"}`가 나옵니다. 봇 역할에는 알림 채널의 `채널 보기`, `메시지 보내기`, `링크 첨부` 권한이 필요합니다.
+
+### 저장소별 Discord 채널 지정
+
+`.env`의 `GITHUB_WEBHOOK_CHANNEL_ID`는 매핑되지 않은 저장소가 사용할 기본 채널입니다. 저장소마다 다른 채널로 보내려면 서버에서 예제 설정을 복사합니다.
+
+```bash
+cd ~/bots/-
+cp config/github_channels.example.yml config/github_channels.yml
+nano config/github_channels.yml
+```
+
+GitHub 저장소 URL이 `https://github.com/OWNER/REPOSITORY`라면 다음처럼 저장소 전체 이름과 Discord 채널 ID를 입력합니다.
+
+```yaml
+repositories:
+  "OWNER/REPOSITORY": 123456789012345678
+  "OWNER/ANOTHER-REPOSITORY": 234567890123456789
+```
+
+저장 후 봇을 재시작합니다.
+
+```bash
+sudo systemctl restart discordbot
+sudo journalctl -u discordbot -n 30 --no-pager
+```
+
+로그의 `GitHub 저장소별 Discord 채널 설정을 불러왔습니다` 뒤에 등록한 저장소 수가 표시됩니다. 저장소 이름은 대소문자를 구분하지 않으며, 설정에 없는 저장소는 기본 채널로 전송됩니다. 실제 `config/github_channels.yml`은 Git에서 제외됩니다.
 
 ### 공개 HTTPS 주소 연결
 
