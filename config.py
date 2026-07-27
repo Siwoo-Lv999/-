@@ -108,14 +108,6 @@ try:
 except ValueError as error:
     raise RuntimeError("USER_COOLDOWN_SECONDS는 숫자여야 합니다.") from error
 try:
-    CONVERSATION_MAINTENANCE_DELAY_SECONDS = float(
-        os.getenv("CONVERSATION_MAINTENANCE_DELAY_SECONDS", "5")
-    )
-except ValueError as error:
-    raise RuntimeError(
-        "CONVERSATION_MAINTENANCE_DELAY_SECONDS는 숫자여야 합니다."
-    ) from error
-try:
     CONVERSATION_RETENTION_DAYS = int(
         os.getenv("CONVERSATION_RETENTION_DAYS", "0")
     )
@@ -140,11 +132,6 @@ if OLLAMA_NUM_CTX < 2048:
 
 if USER_COOLDOWN_SECONDS < 0:
     raise RuntimeError("USER_COOLDOWN_SECONDS는 0 이상의 숫자여야 합니다.")
-
-if CONVERSATION_MAINTENANCE_DELAY_SECONDS < 0:
-    raise RuntimeError(
-        "CONVERSATION_MAINTENANCE_DELAY_SECONDS는 0 이상의 숫자여야 합니다."
-    )
 
 if CONVERSATION_RETENTION_DAYS < 0:
     raise RuntimeError(
