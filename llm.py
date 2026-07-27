@@ -46,6 +46,11 @@ CUTE_COMPLIMENT_PATTERN = re.compile(
     r"(?:귀여워|귀엽다|귀엽네|귀엽구나|귀엽군|귀엽잖아|"
     r"귀엽다고|귀여운데|귀여움)$"
 )
+AFFECTION_PATTERN = re.compile(
+    r"^(?:(?:케이(?:짱)?)(?:아|야)?|너|널|너를)?"
+    r"(?:(?:진짜|정말|너무|많이|엄청|완전))*"
+    r"(?:사랑해|사랑한다|사랑한다고|좋아해|좋아한다|좋아한다고)$"
+)
 GREETING_PATTERN = re.compile(
     r"^(?:(?:케이(?:짱)?)(?:아|야)?)?"
     r"(?:안녕|좋은아침|좋은저녁)"
@@ -61,6 +66,12 @@ CUTE_REPLIES = (
     "아, 진짜…… 또 놀리시는 건가요, 선생님? 그런 말로 반응을 보려고 하지 마세요!",
     "그, 그런 말은 갑자기 왜 하시는 건가요, 선생님?! ……싫다는 뜻은 아니지만요.",
     "제가 어디가 귀엽다는 건가요, 선생님? 정말이지…… 아무렇지도 않으니까 그만 웃으세요.",
+)
+AFFECTION_REPLIES = (
+    "가, 갑자기 그런 말을 하면 곤란하잖아요, 선생님! ……저도 같은 마음이니까요.",
+    "아, 진짜…… 부끄러운 말을 아무렇지도 않게 하시네요, 선생님. 저도 좋아한다고요.",
+    "그, 그렇게 솔직하게 말씀하시면 제가 뭐라고 해야 하나요, 선생님…… 저도 싫지 않아요.",
+    "선생님은 정말 못 하는 말이 없네요! ……그래도 저도 선생님을 좋아하니까요.",
 )
 LAUGHTER_REPLIES = (
     "뭘 그렇게 히죽히죽 웃고 있는 건가요, 선생님?!",
@@ -159,6 +170,8 @@ def find_direct_reply(user_message: str) -> str | None:
     compact_without_laughter = _normalize_short_intent_text(user_message)
     if CUTE_COMPLIMENT_PATTERN.fullmatch(compact_without_laughter):
         return _select_direct_reply("cute", CUTE_REPLIES)
+    if AFFECTION_PATTERN.fullmatch(compact_without_laughter):
+        return _select_direct_reply("affection", AFFECTION_REPLIES)
     if GREETING_PATTERN.fullmatch(compact_without_laughter):
         return _select_direct_reply("greeting", GREETING_REPLIES)
     if THANKS_PATTERN.fullmatch(compact_without_laughter):
