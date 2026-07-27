@@ -8,11 +8,17 @@ from config import (
     CONVERSATION_MAINTENANCE_DELAY_SECONDS,
     CONVERSATION_RETENTION_DAYS,
     DISCORD_TOKEN,
+    GITHUB_WEBHOOK_CHANNEL_ID,
     IGNORE_BOT_MESSAGES,
     OLLAMA_WARMUP_ON_START,
     USER_COOLDOWN_SECONDS,
 )
-from github_webhook import start_github_webhook_server
+from github_webhook import (
+    delete_repository_channel,
+    get_repository_channels,
+    set_repository_channel,
+    start_github_webhook_server,
+)
 from llm import (
     LlmConnectionError,
     LlmResponseError,
@@ -75,6 +81,15 @@ conversation_memory_group = app_commands.Group(
     name="기억",
     description="장기 기억 후보와 승인된 기억을 관리합니다.",
     parent=conversation_group,
+)
+github_group = app_commands.Group(
+    name="github",
+    description="GitHub 알림 설정을 관리합니다.",
+)
+github_channel_group = app_commands.Group(
+    name="채널",
+    description="저장소별 알림 채널을 관리합니다.",
+    parent=github_group,
 )
 commands_synced = False
 last_message_times: dict[int, float] = {}
@@ -168,6 +183,158 @@ async def send_ephemeral_chunks(
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
+
+
+async def require_github_channel_permission(
+    interaction: discord.Interaction,
+) -> bool:
+    member = interaction.user
+    if (
+        interaction.guild is not None
+        and isinstance(member, discord.Member)
+        and member.guild_permissions.manage_guild
+    ):
+        return True
+
+    await interaction.response.send_message(
+        "이 설정은 서버 관리 권한이 있는 사용자만 변경할 수 있습니다.",
+        ephemeral=True,
+    )
+    return False
+
+
+@github_channel_group.command(
+    name="설정",
+    description="GitHub 저장소의 Push 알림 채널을 지정합니다.",
+)
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(
+    repository_name="GitHub 저장소 전체 이름(owner/repository)",
+    channel="Push 알림을 받을 Discord 채널",
+)
+@app_commands.rename(repository_name="저장소", channel="채널")
+async def configure_github_channel(
+    interaction: discord.Interaction,
+    repository_name: str,
+    channel: discord.TextChannel,
+) -> None:
+    if not await require_github_channel_permission(interaction):
+        return
+
+    guild = interaction.guild
+    if guild is None or guild.me is None:
+        await interaction.response.send_message(
+            "현재 서버의 봇 권한을 확인할 수 없습니다.",
+            ephemeral=True,
+        )
+        return
+
+    permissions = channel.permissions_for(guild.me)
+    missing_permissions: list[str] = []
+    if not permissions.view_channel:
+        missing_permissions.append("채널 보기")
+    if not permissions.send_messages:
+        missing_permissions.append("메시지 보내기")
+    if not permissions.embed_links:
+        missing_permissions.append("링크 첨부")
+
+    if missing_permissions:
+        await interaction.response.send_message(
+            (
+                f"{channel.mention} 채널에서 봇에게 다음 권한이 필요합니다: "
+                f"{', '.join(missing_permissions)}"
+            ),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        normalized_name = await set_repository_channel(
+            repository_name,
+            channel.id,
+        )
+    except RuntimeError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        (
+            f"`{normalized_name}` 저장소의 Push 알림 채널을 "
+            f"{channel.mention}로 설정했습니다."
+        ),
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@github_channel_group.command(
+    name="목록",
+    description="저장소별 Push 알림 채널 설정을 확인합니다.",
+)
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+async def show_github_channels(
+    interaction: discord.Interaction,
+) -> None:
+    if not await require_github_channel_permission(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    repository_channels = get_repository_channels()
+    sections = ["**GitHub 저장소별 알림 채널**"]
+
+    if GITHUB_WEBHOOK_CHANNEL_ID is not None:
+        sections.append(
+            f"기본 채널: <#{GITHUB_WEBHOOK_CHANNEL_ID}>"
+        )
+
+    if repository_channels:
+        sections.append("")
+        sections.extend(
+            f"`{repository_name}` → <#{channel_id}>"
+            for repository_name, channel_id in repository_channels.items()
+        )
+    else:
+        sections.extend(("", "저장소별로 지정된 채널이 없습니다."))
+
+    await send_ephemeral_chunks(interaction, "\n".join(sections))
+
+
+@github_channel_group.command(
+    name="삭제",
+    description="저장소별 채널 설정을 삭제하고 기본 채널을 사용합니다.",
+)
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(
+    repository_name="삭제할 GitHub 저장소 전체 이름(owner/repository)"
+)
+@app_commands.rename(repository_name="저장소")
+async def remove_github_channel(
+    interaction: discord.Interaction,
+    repository_name: str,
+) -> None:
+    if not await require_github_channel_permission(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        deleted = await delete_repository_channel(repository_name)
+    except RuntimeError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    if deleted:
+        result = (
+            f"`{repository_name.strip().casefold()}` 설정을 삭제했습니다. "
+            "이제 기본 채널을 사용합니다."
+        )
+    else:
+        result = "해당 저장소의 채널 설정을 찾지 못했습니다."
+    await interaction.followup.send(result, ephemeral=True)
 
 
 @conversation_group.command(
@@ -397,6 +564,7 @@ async def delete_memory(
 
 
 command_tree.add_command(conversation_group)
+command_tree.add_command(github_group)
 
 
 @client.event

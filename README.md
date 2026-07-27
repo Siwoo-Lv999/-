@@ -171,7 +171,17 @@ curl http://127.0.0.1:8080/github/health
 
 ### 저장소별 Discord 채널 지정
 
-`.env`의 `GITHUB_WEBHOOK_CHANNEL_ID`는 매핑되지 않은 저장소가 사용할 기본 채널입니다. 저장소마다 다른 채널로 보내려면 서버에서 예제 설정을 복사합니다.
+`.env`의 `GITHUB_WEBHOOK_CHANNEL_ID`는 매핑되지 않은 저장소가 사용할 기본 채널입니다. 서버 관리 권한이 있는 사용자는 Discord에서 다음 명령으로 저장소별 채널을 관리할 수 있습니다.
+
+- `/github 채널 설정`: `owner/repository` 저장소와 알림 채널을 지정합니다.
+- `/github 채널 목록`: 현재 기본 채널과 저장소별 채널을 표시합니다.
+- `/github 채널 삭제`: 저장소별 설정을 삭제하고 기본 채널을 사용합니다.
+
+설정 명령을 실행할 때는 저장소에 `OWNER/REPOSITORY` 형식의 전체 이름을 입력하고, Discord 채널 선택기에서 알림 채널을 고릅니다. 봇에는 선택한 채널의 `채널 보기`, `메시지 보내기`, `링크 첨부` 권한이 필요합니다.
+
+변경 내용은 `config/github_channels.yml`에 즉시 저장되고 실행 중인 Webhook에도 바로 적용되므로 봇을 재시작할 필요가 없습니다.
+
+설정 파일을 직접 편집하려면 서버에서 예제 설정을 복사합니다.
 
 ```bash
 cd ~/bots/-
@@ -187,7 +197,7 @@ repositories:
   "OWNER/ANOTHER-REPOSITORY": 234567890123456789
 ```
 
-저장 후 봇을 재시작합니다.
+직접 편집한 경우에는 봇을 재시작합니다.
 
 ```bash
 sudo systemctl restart discordbot

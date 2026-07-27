@@ -37,6 +37,8 @@ REPOSITORY_CHANNELS_KEY = web.AppKey(
 )
 
 _runner: web.AppRunner | None = None
+_repository_channels: dict[str, int] = {}
+_repository_channels_lock = asyncio.Lock()
 
 
 def verify_github_signature(
@@ -53,6 +55,25 @@ def verify_github_signature(
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(expected_signature, signature_header)
+
+
+def normalize_repository_name(repository_name: str) -> str:
+    normalized_name = repository_name.strip()
+    repository_parts = normalized_name.split("/")
+    if (
+        len(repository_parts) != 2
+        or not all(part.strip() for part in repository_parts)
+    ):
+        raise RuntimeError(
+            "GitHub 저장소 이름은 owner/repository 형식이어야 합니다."
+        )
+    return normalized_name.casefold()
+
+
+def _validate_channel_id(channel_id: int) -> int:
+    if isinstance(channel_id, bool) or channel_id <= 0:
+        raise RuntimeError("Discord 채널 ID가 올바르지 않습니다.")
+    return channel_id
 
 
 def load_repository_channels(config_path: Path) -> dict[str, int]:
@@ -90,16 +111,13 @@ def load_repository_channels(config_path: Path) -> dict[str, int]:
         if not isinstance(raw_name, str):
             raise RuntimeError("GitHub 저장소 이름은 문자열이어야 합니다.")
 
-        repository_name = raw_name.strip()
-        repository_parts = repository_name.split("/")
-        if (
-            len(repository_parts) != 2
-            or not all(part.strip() for part in repository_parts)
-        ):
+        try:
+            repository_name = normalize_repository_name(raw_name)
+        except RuntimeError as error:
             raise RuntimeError(
                 "GitHub 저장소 이름은 owner/repository 형식이어야 합니다: "
-                f"{repository_name or raw_name}"
-            )
+                f"{raw_name}"
+            ) from error
 
         if (
             isinstance(raw_channel_id, int)
@@ -113,22 +131,102 @@ def load_repository_channels(config_path: Path) -> dict[str, int]:
             channel_id = int(raw_channel_id.strip())
         else:
             raise RuntimeError(
-                f"{repository_name}의 Discord 채널 ID는 정수여야 합니다."
+                f"{raw_name}의 Discord 채널 ID는 정수여야 합니다."
             )
 
-        if channel_id <= 0:
+        try:
+            channel_id = _validate_channel_id(channel_id)
+        except RuntimeError as error:
             raise RuntimeError(
-                f"{repository_name}의 Discord 채널 ID가 올바르지 않습니다."
-            )
+                f"{raw_name}의 Discord 채널 ID가 올바르지 않습니다."
+            ) from error
 
-        normalized_name = repository_name.casefold()
-        if normalized_name in repository_channels:
+        if repository_name in repository_channels:
             raise RuntimeError(
-                f"GitHub 저장소 설정이 중복되었습니다: {repository_name}"
+                f"GitHub 저장소 설정이 중복되었습니다: {raw_name}"
             )
-        repository_channels[normalized_name] = channel_id
+        repository_channels[repository_name] = channel_id
 
     return repository_channels
+
+
+def _write_repository_channels(
+    config_path: Path,
+    repository_channels: dict[str, int],
+) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = yaml.safe_dump(
+        {"repositories": dict(sorted(repository_channels.items()))},
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    temporary_path = config_path.with_name(f"{config_path.name}.tmp")
+
+    try:
+        temporary_path.write_text(serialized, encoding="utf-8")
+        temporary_path.replace(config_path)
+    except OSError as error:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"GitHub 채널 설정 파일을 저장하지 못했습니다: {config_path}"
+        ) from error
+
+
+def _replace_active_repository_channels(
+    repository_channels: dict[str, int],
+) -> None:
+    _repository_channels.clear()
+    _repository_channels.update(repository_channels)
+
+
+async def set_repository_channel(
+    repository_name: str,
+    channel_id: int,
+) -> str:
+    normalized_name = normalize_repository_name(repository_name)
+    channel_id = _validate_channel_id(channel_id)
+
+    async with _repository_channels_lock:
+        repository_channels = await asyncio.to_thread(
+            load_repository_channels,
+            GITHUB_WEBHOOK_CHANNELS_PATH,
+        )
+        repository_channels[normalized_name] = channel_id
+        await asyncio.to_thread(
+            _write_repository_channels,
+            GITHUB_WEBHOOK_CHANNELS_PATH,
+            repository_channels,
+        )
+        _replace_active_repository_channels(repository_channels)
+
+    return normalized_name
+
+
+async def delete_repository_channel(repository_name: str) -> bool:
+    normalized_name = normalize_repository_name(repository_name)
+
+    async with _repository_channels_lock:
+        repository_channels = await asyncio.to_thread(
+            load_repository_channels,
+            GITHUB_WEBHOOK_CHANNELS_PATH,
+        )
+        deleted = repository_channels.pop(normalized_name, None) is not None
+        if deleted:
+            await asyncio.to_thread(
+                _write_repository_channels,
+                GITHUB_WEBHOOK_CHANNELS_PATH,
+                repository_channels,
+            )
+        _replace_active_repository_channels(repository_channels)
+
+    return deleted
+
+
+def get_repository_channels() -> dict[str, int]:
+    return dict(sorted(_repository_channels.items()))
 
 
 def resolve_repository_channel_id(
@@ -409,7 +507,9 @@ def create_github_webhook_app(
     app[DELIVERY_IDS_KEY] = set()
     app[DELIVERY_ORDER_KEY] = deque()
     app[NOTIFICATION_TASKS_KEY] = set()
-    app[REPOSITORY_CHANNELS_KEY] = dict(repository_channels or {})
+    app[REPOSITORY_CHANNELS_KEY] = (
+        repository_channels if repository_channels is not None else {}
+    )
     app.router.add_get(HEALTH_PATH, _handle_health)
     app.router.add_post(WEBHOOK_PATH, _handle_webhook)
     return app
@@ -428,10 +528,11 @@ async def start_github_webhook_server(
     repository_channels = load_repository_channels(
         GITHUB_WEBHOOK_CHANNELS_PATH
     )
+    _replace_active_repository_channels(repository_channels)
     app = create_github_webhook_app(
         client,
         GITHUB_WEBHOOK_SECRET,
-        repository_channels,
+        _repository_channels,
     )
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
