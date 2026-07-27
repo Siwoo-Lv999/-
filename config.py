@@ -84,6 +84,16 @@ if not GITHUB_WEBHOOK_CHANNELS_PATH.is_absolute():
     GITHUB_WEBHOOK_CHANNELS_PATH = (
         PROJECT_ROOT / GITHUB_WEBHOOK_CHANNELS_PATH
     )
+GITHUB_WEBHOOK_BRANCHES_PATH = Path(
+    os.getenv(
+        "GITHUB_WEBHOOK_BRANCHES_PATH",
+        "config/github_branches.yml",
+    )
+)
+if not GITHUB_WEBHOOK_BRANCHES_PATH.is_absolute():
+    GITHUB_WEBHOOK_BRANCHES_PATH = (
+        PROJECT_ROOT / GITHUB_WEBHOOK_BRANCHES_PATH
+    )
 
 try:
     OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))

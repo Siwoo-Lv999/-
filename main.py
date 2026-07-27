@@ -14,7 +14,11 @@ from config import (
     USER_COOLDOWN_SECONDS,
 )
 from github_webhook import (
+    add_repository_branch,
+    allow_all_repository_branches,
+    delete_repository_branch,
     delete_repository_channel,
+    get_repository_branches,
     get_repository_channels,
     set_repository_channel,
     start_github_webhook_server,
@@ -90,6 +94,11 @@ github_group = app_commands.Group(
 github_channel_group = app_commands.Group(
     name="채널",
     description="저장소별 알림 채널을 관리합니다.",
+    parent=github_group,
+)
+github_branch_group = app_commands.Group(
+    name="브랜치",
+    description="저장소별 Push 알림 브랜치를 관리합니다.",
     parent=github_group,
 )
 commands_synced = False
@@ -186,7 +195,7 @@ async def send_ephemeral_chunks(
         )
 
 
-async def require_github_channel_permission(
+async def require_github_admin_permission(
     interaction: discord.Interaction,
 ) -> bool:
     member = interaction.user
@@ -219,7 +228,7 @@ async def configure_github_channel(
     repository_name: str,
     channel: discord.TextChannel,
 ) -> None:
-    if not await require_github_channel_permission(interaction):
+    if not await require_github_admin_permission(interaction):
         return
 
     guild = interaction.guild
@@ -278,7 +287,7 @@ async def configure_github_channel(
 async def show_github_channels(
     interaction: discord.Interaction,
 ) -> None:
-    if not await require_github_channel_permission(interaction):
+    if not await require_github_admin_permission(interaction):
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -293,7 +302,11 @@ async def show_github_channels(
     if repository_channels:
         sections.append("")
         sections.extend(
-            f"`{repository_name}` → <#{channel_id}>"
+            (
+                f"`{repository_name}` → <#{channel_id}>"
+                if channel_id is not None
+                else f"`{repository_name}` → **알림 꺼짐**"
+            )
             for repository_name, channel_id in repository_channels.items()
         )
     else:
@@ -304,7 +317,7 @@ async def show_github_channels(
 
 @github_channel_group.command(
     name="삭제",
-    description="저장소별 채널 설정을 삭제하고 기본 채널을 사용합니다.",
+    description="해당 GitHub 저장소의 Push 알림을 끕니다.",
 )
 @app_commands.guild_only()
 @app_commands.describe(
@@ -315,23 +328,184 @@ async def remove_github_channel(
     interaction: discord.Interaction,
     repository_name: str,
 ) -> None:
-    if not await require_github_channel_permission(interaction):
+    if not await require_github_admin_permission(interaction):
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        deleted = await delete_repository_channel(repository_name)
+        changed = await delete_repository_channel(repository_name)
     except RuntimeError as error:
         await interaction.followup.send(str(error), ephemeral=True)
         return
 
-    if deleted:
+    if changed:
         result = (
-            f"`{repository_name.strip().casefold()}` 설정을 삭제했습니다. "
-            "이제 기본 채널을 사용합니다."
+            f"`{repository_name.strip().casefold()}` 저장소의 "
+            "Push 알림을 껐습니다."
         )
     else:
-        result = "해당 저장소의 채널 설정을 찾지 못했습니다."
+        result = "해당 저장소의 Push 알림은 이미 꺼져 있습니다."
+    await interaction.followup.send(result, ephemeral=True)
+
+
+@github_branch_group.command(
+    name="추가",
+    description="저장소의 Push 알림 허용 브랜치를 추가합니다.",
+)
+@app_commands.guild_only()
+@app_commands.describe(
+    repository_name="GitHub 저장소 전체 이름(owner/repository)",
+    branch_name="알림을 허용할 브랜치 이름",
+)
+@app_commands.rename(repository_name="저장소", branch_name="브랜치")
+async def add_github_branch(
+    interaction: discord.Interaction,
+    repository_name: str,
+    branch_name: str,
+) -> None:
+    if not await require_github_admin_permission(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        repository, branch, changed = await add_repository_branch(
+            repository_name,
+            branch_name,
+        )
+    except RuntimeError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    if changed:
+        result = (
+            f"`{repository}` 저장소의 허용 목록에 `{branch}` 브랜치를 "
+            "추가했습니다. 이제 등록된 브랜치만 알림을 보냅니다."
+        )
+    else:
+        result = "해당 브랜치는 이미 알림 허용 목록에 있습니다."
+    await interaction.followup.send(result, ephemeral=True)
+
+
+@github_branch_group.command(
+    name="삭제",
+    description="저장소의 Push 알림 허용 브랜치를 삭제합니다.",
+)
+@app_commands.guild_only()
+@app_commands.describe(
+    repository_name="GitHub 저장소 전체 이름(owner/repository)",
+    branch_name="허용 목록에서 삭제할 브랜치 이름",
+)
+@app_commands.rename(repository_name="저장소", branch_name="브랜치")
+async def remove_github_branch(
+    interaction: discord.Interaction,
+    repository_name: str,
+    branch_name: str,
+) -> None:
+    if not await require_github_admin_permission(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        changed, remaining_count = await delete_repository_branch(
+            repository_name,
+            branch_name,
+        )
+    except RuntimeError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    if changed and remaining_count == 0:
+        result = (
+            "마지막 허용 브랜치를 삭제했습니다. 이 저장소는 이제 어떤 "
+            "브랜치의 Push 알림도 보내지 않습니다."
+        )
+    elif changed:
+        result = (
+            f"허용 목록에서 `{branch_name.strip()}` 브랜치를 삭제했습니다. "
+            f"남은 브랜치는 {remaining_count}개입니다."
+        )
+    elif remaining_count is None:
+        result = (
+            "이 저장소는 브랜치 필터가 없어 모든 브랜치 알림을 "
+            "보내고 있습니다."
+        )
+    else:
+        result = "해당 브랜치를 허용 목록에서 찾지 못했습니다."
+    await interaction.followup.send(result, ephemeral=True)
+
+
+@github_branch_group.command(
+    name="목록",
+    description="저장소의 Push 알림 허용 브랜치를 확인합니다.",
+)
+@app_commands.guild_only()
+@app_commands.describe(
+    repository_name="확인할 GitHub 저장소 전체 이름(owner/repository)"
+)
+@app_commands.rename(repository_name="저장소")
+async def show_github_branches(
+    interaction: discord.Interaction,
+    repository_name: str,
+) -> None:
+    if not await require_github_admin_permission(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        repository = repository_name.strip().casefold()
+        branches = get_repository_branches(repository_name)
+    except RuntimeError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    if branches is None:
+        result = (
+            f"`{repository}` 저장소는 모든 브랜치의 Push 알림을 보냅니다."
+        )
+    elif not branches:
+        result = (
+            f"`{repository}` 저장소는 허용 브랜치가 없어 Push 알림을 "
+            "보내지 않습니다."
+        )
+    else:
+        branch_lines = "\n".join(
+            f"- `{branch}`" for branch in sorted(branches)
+        )
+        result = (
+            f"**{repository} 허용 브랜치**\n{branch_lines}"
+        )
+    await interaction.followup.send(result, ephemeral=True)
+
+
+@github_branch_group.command(
+    name="전체",
+    description="브랜치 필터를 제거하고 모든 브랜치 알림을 허용합니다.",
+)
+@app_commands.guild_only()
+@app_commands.describe(
+    repository_name="전체 브랜치를 허용할 저장소(owner/repository)"
+)
+@app_commands.rename(repository_name="저장소")
+async def allow_all_github_branches(
+    interaction: discord.Interaction,
+    repository_name: str,
+) -> None:
+    if not await require_github_admin_permission(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        changed = await allow_all_repository_branches(repository_name)
+    except RuntimeError as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    result = (
+        "브랜치 필터를 제거했습니다. 이제 모든 브랜치의 Push 알림을 "
+        "보냅니다."
+        if changed
+        else "이 저장소는 이미 모든 브랜치 알림을 보내고 있습니다."
+    )
     await interaction.followup.send(result, ephemeral=True)
 
 

@@ -41,6 +41,7 @@ GITHUB_WEBHOOK_ENABLED=false
 GITHUB_WEBHOOK_SECRET=
 GITHUB_WEBHOOK_CHANNEL_ID=
 GITHUB_WEBHOOK_CHANNELS_PATH=config/github_channels.yml
+GITHUB_WEBHOOK_BRANCHES_PATH=config/github_branches.yml
 GITHUB_WEBHOOK_HOST=127.0.0.1
 GITHUB_WEBHOOK_PORT=8080
 ```
@@ -59,6 +60,7 @@ GITHUB_WEBHOOK_PORT=8080
 - `GITHUB_WEBHOOK_SECRET`: GitHub와 봇만 공유하는 Webhook 비밀키입니다.
 - `GITHUB_WEBHOOK_CHANNEL_ID`: 저장소별 설정이 없을 때 사용할 기본 Discord 채널 ID입니다.
 - `GITHUB_WEBHOOK_CHANNELS_PATH`: 저장소별 Discord 채널 설정 파일 경로입니다.
+- `GITHUB_WEBHOOK_BRANCHES_PATH`: 저장소별 허용 브랜치 설정 파일 경로입니다.
 - `GITHUB_WEBHOOK_HOST`, `GITHUB_WEBHOOK_PORT`: 로컬 Webhook 수신 주소입니다.
 
 ## 3. Ollama 준비
@@ -155,6 +157,7 @@ GITHUB_WEBHOOK_ENABLED=true
 GITHUB_WEBHOOK_SECRET=방금_만든_비밀키
 GITHUB_WEBHOOK_CHANNEL_ID=복사한_Discord_채널_ID
 GITHUB_WEBHOOK_CHANNELS_PATH=config/github_channels.yml
+GITHUB_WEBHOOK_BRANCHES_PATH=config/github_branches.yml
 GITHUB_WEBHOOK_HOST=127.0.0.1
 GITHUB_WEBHOOK_PORT=8080
 ```
@@ -175,11 +178,11 @@ curl http://127.0.0.1:8080/github/health
 
 - `/github 채널 설정`: `owner/repository` 저장소와 알림 채널을 지정합니다.
 - `/github 채널 목록`: 현재 기본 채널과 저장소별 채널을 표시합니다.
-- `/github 채널 삭제`: 저장소별 설정을 삭제하고 기본 채널을 사용합니다.
+- `/github 채널 삭제`: 해당 저장소의 Push 알림을 완전히 끕니다.
 
 설정 명령을 실행할 때는 저장소에 `OWNER/REPOSITORY` 형식의 전체 이름을 입력하고, Discord 채널 선택기에서 알림 채널을 고릅니다. 봇에는 선택한 채널의 `채널 보기`, `메시지 보내기`, `링크 첨부` 권한이 필요합니다.
 
-변경 내용은 `config/github_channels.yml`에 즉시 저장되고 실행 중인 Webhook에도 바로 적용되므로 봇을 재시작할 필요가 없습니다.
+변경 내용은 `config/github_channels.yml`에 즉시 저장되고 실행 중인 Webhook에도 바로 적용되므로 봇을 재시작할 필요가 없습니다. 삭제한 저장소는 `알림 꺼짐` 상태로 남으며, `/github 채널 설정`을 다시 실행하면 알림이 켜집니다. 한 번도 설정하지 않은 저장소만 `.env`의 기본 채널을 사용합니다.
 
 설정 파일을 직접 편집하려면 서버에서 예제 설정을 복사합니다.
 
@@ -195,6 +198,7 @@ GitHub 저장소 URL이 `https://github.com/OWNER/REPOSITORY`라면 다음처럼
 repositories:
   "OWNER/REPOSITORY": 123456789012345678
   "OWNER/ANOTHER-REPOSITORY": 234567890123456789
+  "OWNER/MUTED-REPOSITORY": null
 ```
 
 직접 편집한 경우에는 봇을 재시작합니다.
@@ -205,6 +209,36 @@ sudo journalctl -u discordbot -n 30 --no-pager
 ```
 
 로그의 `GitHub 저장소별 Discord 채널 설정을 불러왔습니다` 뒤에 등록한 저장소 수가 표시됩니다. 저장소 이름은 대소문자를 구분하지 않으며, 설정에 없는 저장소는 기본 채널로 전송됩니다. 실제 `config/github_channels.yml`은 Git에서 제외됩니다.
+
+### 저장소별 Push 브랜치 지정
+
+서버 관리 권한이 있는 사용자는 Discord에서 저장소별 허용 브랜치를 관리할 수 있습니다.
+
+- `/github 브랜치 추가`: 알림을 받을 브랜치를 허용 목록에 추가합니다.
+- `/github 브랜치 삭제`: 브랜치를 허용 목록에서 삭제합니다.
+- `/github 브랜치 목록`: 저장소의 현재 허용 브랜치를 확인합니다.
+- `/github 브랜치 전체`: 필터를 제거하고 모든 브랜치 알림을 허용합니다.
+
+브랜치 필터가 없는 저장소는 모든 브랜치의 Push 알림을 보냅니다. 브랜치를 하나 추가하는 순간부터 해당 저장소는 허용 목록의 브랜치만 알립니다. 마지막 브랜치를 삭제해 목록이 비면 어떤 브랜치도 알리지 않으며, `/github 브랜치 전체`로 전체 허용 상태를 복구할 수 있습니다. 브랜치 이름은 대소문자를 구분합니다.
+
+변경 내용은 `config/github_branches.yml`에 즉시 저장되고 실행 중인 Webhook에도 바로 적용됩니다. GitHub Webhook 주소와 Secret은 변경할 필요가 없습니다.
+
+설정 파일을 직접 편집하려면 다음 형식을 사용합니다.
+
+```bash
+cp config/github_branches.example.yml config/github_branches.yml
+nano config/github_branches.yml
+```
+
+```yaml
+repositories:
+  "OWNER/REPOSITORY":
+    - main
+    - develop
+  "OWNER/MUTED-REPOSITORY": []
+```
+
+직접 편집한 경우에는 봇을 재시작해야 합니다. 실제 `config/github_branches.yml`은 Git에서 제외됩니다.
 
 ### 공개 HTTPS 주소 연결
 

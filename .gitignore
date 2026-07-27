@@ -8,3 +8,4 @@ data/
 *.db-wal
 logs/
 config/github_channels.yml
+config/github_branches.yml

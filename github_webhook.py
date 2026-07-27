@@ -11,6 +11,7 @@ import discord
 import yaml
 
 from config import (
+    GITHUB_WEBHOOK_BRANCHES_PATH,
     GITHUB_WEBHOOK_CHANNEL_ID,
     GITHUB_WEBHOOK_CHANNELS_PATH,
     GITHUB_WEBHOOK_ENABLED,
@@ -33,12 +34,17 @@ NOTIFICATION_TASKS_KEY = web.AppKey(
     "notification_tasks", set[asyncio.Task[None]]
 )
 REPOSITORY_CHANNELS_KEY = web.AppKey(
-    "repository_channels", dict[str, int]
+    "repository_channels", dict[str, int | None]
+)
+REPOSITORY_BRANCHES_KEY = web.AppKey(
+    "repository_branches", dict[str, set[str]]
 )
 
 _runner: web.AppRunner | None = None
-_repository_channels: dict[str, int] = {}
+_repository_channels: dict[str, int | None] = {}
 _repository_channels_lock = asyncio.Lock()
+_repository_branches: dict[str, set[str]] = {}
+_repository_branches_lock = asyncio.Lock()
 
 
 def verify_github_signature(
@@ -76,7 +82,7 @@ def _validate_channel_id(channel_id: int) -> int:
     return channel_id
 
 
-def load_repository_channels(config_path: Path) -> dict[str, int]:
+def load_repository_channels(config_path: Path) -> dict[str, int | None]:
     try:
         raw_config = config_path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -106,7 +112,7 @@ def load_repository_channels(config_path: Path) -> dict[str, int]:
             "GitHub 채널 설정의 repositories는 객체여야 합니다."
         )
 
-    repository_channels: dict[str, int] = {}
+    repository_channels: dict[str, int | None] = {}
     for raw_name, raw_channel_id in raw_repositories.items():
         if not isinstance(raw_name, str):
             raise RuntimeError("GitHub 저장소 이름은 문자열이어야 합니다.")
@@ -119,7 +125,9 @@ def load_repository_channels(config_path: Path) -> dict[str, int]:
                 f"{raw_name}"
             ) from error
 
-        if (
+        if raw_channel_id is None:
+            channel_id = None
+        elif (
             isinstance(raw_channel_id, int)
             and not isinstance(raw_channel_id, bool)
         ):
@@ -134,12 +142,13 @@ def load_repository_channels(config_path: Path) -> dict[str, int]:
                 f"{raw_name}의 Discord 채널 ID는 정수여야 합니다."
             )
 
-        try:
-            channel_id = _validate_channel_id(channel_id)
-        except RuntimeError as error:
-            raise RuntimeError(
-                f"{raw_name}의 Discord 채널 ID가 올바르지 않습니다."
-            ) from error
+        if channel_id is not None:
+            try:
+                channel_id = _validate_channel_id(channel_id)
+            except RuntimeError as error:
+                raise RuntimeError(
+                    f"{raw_name}의 Discord 채널 ID가 올바르지 않습니다."
+                ) from error
 
         if repository_name in repository_channels:
             raise RuntimeError(
@@ -152,7 +161,7 @@ def load_repository_channels(config_path: Path) -> dict[str, int]:
 
 def _write_repository_channels(
     config_path: Path,
-    repository_channels: dict[str, int],
+    repository_channels: dict[str, int | None],
 ) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     serialized = yaml.safe_dump(
@@ -176,7 +185,7 @@ def _write_repository_channels(
 
 
 def _replace_active_repository_channels(
-    repository_channels: dict[str, int],
+    repository_channels: dict[str, int | None],
 ) -> None:
     _repository_channels.clear()
     _repository_channels.update(repository_channels)
@@ -213,8 +222,12 @@ async def delete_repository_channel(repository_name: str) -> bool:
             load_repository_channels,
             GITHUB_WEBHOOK_CHANNELS_PATH,
         )
-        deleted = repository_channels.pop(normalized_name, None) is not None
-        if deleted:
+        already_disabled = (
+            normalized_name in repository_channels
+            and repository_channels[normalized_name] is None
+        )
+        if not already_disabled:
+            repository_channels[normalized_name] = None
             await asyncio.to_thread(
                 _write_repository_channels,
                 GITHUB_WEBHOOK_CHANNELS_PATH,
@@ -222,16 +235,266 @@ async def delete_repository_channel(repository_name: str) -> bool:
             )
         _replace_active_repository_channels(repository_channels)
 
-    return deleted
+    return not already_disabled
 
 
-def get_repository_channels() -> dict[str, int]:
+def get_repository_channels() -> dict[str, int | None]:
     return dict(sorted(_repository_channels.items()))
+
+
+def normalize_branch_name(branch_name: str) -> str:
+    normalized_name = branch_name.strip()
+    invalid_characters = " ~^:?*[\\"
+    if (
+        not normalized_name
+        or normalized_name == "@"
+        or normalized_name.startswith(("-", "/", "."))
+        or normalized_name.endswith(("/", ".", ".lock"))
+        or ".." in normalized_name
+        or "//" in normalized_name
+        or "@{" in normalized_name
+        or any(
+            character in invalid_characters
+            or ord(character) < 32
+            or ord(character) == 127
+            for character in normalized_name
+        )
+    ):
+        raise RuntimeError("올바른 Git 브랜치 이름을 입력해 주세요.")
+    return normalized_name
+
+
+def load_repository_branches(
+    config_path: Path,
+) -> dict[str, set[str]]:
+    try:
+        raw_config = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        raise RuntimeError(
+            f"GitHub 브랜치 설정 파일을 읽지 못했습니다: {config_path}"
+        ) from error
+
+    try:
+        config_data = yaml.safe_load(raw_config)
+    except yaml.YAMLError as error:
+        raise RuntimeError(
+            f"GitHub 브랜치 설정 YAML이 올바르지 않습니다: {config_path}"
+        ) from error
+
+    if config_data is None:
+        return {}
+    if not isinstance(config_data, dict):
+        raise RuntimeError(
+            "GitHub 브랜치 설정의 최상위 값은 객체여야 합니다."
+        )
+
+    raw_repositories = config_data.get("repositories", {})
+    if not isinstance(raw_repositories, dict):
+        raise RuntimeError(
+            "GitHub 브랜치 설정의 repositories는 객체여야 합니다."
+        )
+
+    repository_branches: dict[str, set[str]] = {}
+    for raw_name, raw_branches in raw_repositories.items():
+        if not isinstance(raw_name, str):
+            raise RuntimeError("GitHub 저장소 이름은 문자열이어야 합니다.")
+
+        try:
+            repository_name = normalize_repository_name(raw_name)
+        except RuntimeError as error:
+            raise RuntimeError(
+                "GitHub 저장소 이름은 owner/repository 형식이어야 합니다: "
+                f"{raw_name}"
+            ) from error
+
+        if not isinstance(raw_branches, list):
+            raise RuntimeError(
+                f"{raw_name}의 브랜치 설정은 목록이어야 합니다."
+            )
+
+        branches: set[str] = set()
+        for raw_branch in raw_branches:
+            if not isinstance(raw_branch, str):
+                raise RuntimeError(
+                    f"{raw_name}의 브랜치 이름은 문자열이어야 합니다."
+                )
+            try:
+                branch_name = normalize_branch_name(raw_branch)
+            except RuntimeError as error:
+                raise RuntimeError(
+                    f"{raw_name}의 브랜치 이름이 올바르지 않습니다: "
+                    f"{raw_branch}"
+                ) from error
+            branches.add(branch_name)
+
+        if repository_name in repository_branches:
+            raise RuntimeError(
+                f"GitHub 브랜치 설정이 중복되었습니다: {raw_name}"
+            )
+        repository_branches[repository_name] = branches
+
+    return repository_branches
+
+
+def _write_repository_branches(
+    config_path: Path,
+    repository_branches: dict[str, set[str]],
+) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = yaml.safe_dump(
+        {
+            "repositories": {
+                repository_name: sorted(branches)
+                for repository_name, branches in sorted(
+                    repository_branches.items()
+                )
+            }
+        },
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    temporary_path = config_path.with_name(f"{config_path.name}.tmp")
+
+    try:
+        temporary_path.write_text(serialized, encoding="utf-8")
+        temporary_path.replace(config_path)
+    except OSError as error:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"GitHub 브랜치 설정 파일을 저장하지 못했습니다: {config_path}"
+        ) from error
+
+
+def _replace_active_repository_branches(
+    repository_branches: dict[str, set[str]],
+) -> None:
+    _repository_branches.clear()
+    _repository_branches.update(
+        {
+            repository_name: set(branches)
+            for repository_name, branches in repository_branches.items()
+        }
+    )
+
+
+async def add_repository_branch(
+    repository_name: str,
+    branch_name: str,
+) -> tuple[str, str, bool]:
+    normalized_repository = normalize_repository_name(repository_name)
+    normalized_branch = normalize_branch_name(branch_name)
+
+    async with _repository_branches_lock:
+        repository_branches = await asyncio.to_thread(
+            load_repository_branches,
+            GITHUB_WEBHOOK_BRANCHES_PATH,
+        )
+        branches = repository_branches.setdefault(
+            normalized_repository,
+            set(),
+        )
+        changed = normalized_branch not in branches
+        if changed:
+            branches.add(normalized_branch)
+            await asyncio.to_thread(
+                _write_repository_branches,
+                GITHUB_WEBHOOK_BRANCHES_PATH,
+                repository_branches,
+            )
+        _replace_active_repository_branches(repository_branches)
+
+    return normalized_repository, normalized_branch, changed
+
+
+async def delete_repository_branch(
+    repository_name: str,
+    branch_name: str,
+) -> tuple[bool, int | None]:
+    normalized_repository = normalize_repository_name(repository_name)
+    normalized_branch = normalize_branch_name(branch_name)
+
+    async with _repository_branches_lock:
+        repository_branches = await asyncio.to_thread(
+            load_repository_branches,
+            GITHUB_WEBHOOK_BRANCHES_PATH,
+        )
+        branches = repository_branches.get(normalized_repository)
+        if branches is None or normalized_branch not in branches:
+            _replace_active_repository_branches(repository_branches)
+            return False, None if branches is None else len(branches)
+
+        branches.remove(normalized_branch)
+        await asyncio.to_thread(
+            _write_repository_branches,
+            GITHUB_WEBHOOK_BRANCHES_PATH,
+            repository_branches,
+        )
+        _replace_active_repository_branches(repository_branches)
+        return True, len(branches)
+
+
+async def allow_all_repository_branches(
+    repository_name: str,
+) -> bool:
+    normalized_repository = normalize_repository_name(repository_name)
+
+    async with _repository_branches_lock:
+        repository_branches = await asyncio.to_thread(
+            load_repository_branches,
+            GITHUB_WEBHOOK_BRANCHES_PATH,
+        )
+        removed = repository_branches.pop(normalized_repository, None)
+        changed = removed is not None
+        if changed:
+            await asyncio.to_thread(
+                _write_repository_branches,
+                GITHUB_WEBHOOK_BRANCHES_PATH,
+                repository_branches,
+            )
+        _replace_active_repository_branches(repository_branches)
+
+    return changed
+
+
+def get_repository_branches(
+    repository_name: str,
+) -> set[str] | None:
+    normalized_repository = normalize_repository_name(repository_name)
+    branches = _repository_branches.get(normalized_repository)
+    return None if branches is None else set(branches)
+
+
+def should_notify_for_branch(
+    payload: dict[str, Any],
+    repository_branches: dict[str, set[str]],
+) -> bool:
+    repository = payload.get("repository")
+    if not isinstance(repository, dict):
+        return True
+
+    full_name = repository.get("full_name")
+    if not isinstance(full_name, str) or not full_name.strip():
+        return True
+
+    branches = repository_branches.get(full_name.strip().casefold())
+    if branches is None:
+        return True
+
+    ref = payload.get("ref")
+    if not isinstance(ref, str) or not ref.startswith("refs/heads/"):
+        return False
+    branch_name = ref.removeprefix("refs/heads/")
+    return branch_name in branches
 
 
 def resolve_repository_channel_id(
     payload: dict[str, Any],
-    repository_channels: dict[str, int],
+    repository_channels: dict[str, int | None],
     default_channel_id: int | None,
 ) -> int | None:
     repository = payload.get("repository")
@@ -408,7 +671,7 @@ async def _send_push_notification(
     client: discord.Client,
     payload: dict[str, Any],
     delivery_id: str,
-    repository_channels: dict[str, int],
+    repository_channels: dict[str, int | None],
 ) -> None:
     channel_id = resolve_repository_channel_id(
         payload,
@@ -480,6 +743,14 @@ async def _handle_webhook(request: web.Request) -> web.Response:
         return web.json_response(
             {"status": "ignored", "event": event_name}
         )
+    if not should_notify_for_branch(
+        payload,
+        request.app[REPOSITORY_BRANCHES_KEY],
+    ):
+        return web.json_response(
+            {"status": "ignored", "reason": "branch filter"},
+            status=202,
+        )
 
     task = asyncio.create_task(
         _send_push_notification(
@@ -499,7 +770,8 @@ async def _handle_webhook(request: web.Request) -> web.Response:
 def create_github_webhook_app(
     client: discord.Client,
     secret: str,
-    repository_channels: dict[str, int] | None = None,
+    repository_channels: dict[str, int | None] | None = None,
+    repository_branches: dict[str, set[str]] | None = None,
 ) -> web.Application:
     app = web.Application(client_max_size=2 * 1024 * 1024)
     app[DISCORD_CLIENT_KEY] = client
@@ -509,6 +781,9 @@ def create_github_webhook_app(
     app[NOTIFICATION_TASKS_KEY] = set()
     app[REPOSITORY_CHANNELS_KEY] = (
         repository_channels if repository_channels is not None else {}
+    )
+    app[REPOSITORY_BRANCHES_KEY] = (
+        repository_branches if repository_branches is not None else {}
     )
     app.router.add_get(HEALTH_PATH, _handle_health)
     app.router.add_post(WEBHOOK_PATH, _handle_webhook)
@@ -528,11 +803,16 @@ async def start_github_webhook_server(
     repository_channels = load_repository_channels(
         GITHUB_WEBHOOK_CHANNELS_PATH
     )
+    repository_branches = load_repository_branches(
+        GITHUB_WEBHOOK_BRANCHES_PATH
+    )
     _replace_active_repository_channels(repository_channels)
+    _replace_active_repository_branches(repository_branches)
     app = create_github_webhook_app(
         client,
         GITHUB_WEBHOOK_SECRET,
         _repository_channels,
+        _repository_branches,
     )
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
@@ -556,5 +836,9 @@ async def start_github_webhook_server(
     print(
         "GitHub 저장소별 Discord 채널 설정을 불러왔습니다: "
         f"{len(repository_channels)}개"
+    )
+    print(
+        "GitHub 저장소별 브랜치 필터를 불러왔습니다: "
+        f"{len(repository_branches)}개"
     )
     return runner
