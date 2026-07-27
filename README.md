@@ -37,6 +37,11 @@ CONVERSATION_MAINTENANCE_DELAY_SECONDS=5
 IGNORE_BOT_MESSAGES=true
 MODERATION_CONFIG_PATH=config/moderation.yml
 CONVERSATION_RETENTION_DAYS=0
+GITHUB_WEBHOOK_ENABLED=false
+GITHUB_WEBHOOK_SECRET=
+GITHUB_WEBHOOK_CHANNEL_ID=
+GITHUB_WEBHOOK_HOST=127.0.0.1
+GITHUB_WEBHOOK_PORT=8080
 ```
 
 실제 토큰은 `.env.example`에 넣거나 Git에 커밋하지 마세요.
@@ -49,6 +54,10 @@ CONVERSATION_RETENTION_DAYS=0
 - `IGNORE_BOT_MESSAGES`: 다른 봇의 메시지를 무시할지 정합니다. 자기 자신의 메시지는 이 설정과 관계없이 항상 무시합니다.
 - `MODERATION_CONFIG_PATH`: 대화 안전 필터 규칙 파일 경로입니다.
 - `CONVERSATION_RETENTION_DAYS`: 대화 보존 일수입니다. `0`은 무기한이며 `7`, `30`처럼 설정할 수 있습니다.
+- `GITHUB_WEBHOOK_ENABLED`: GitHub 푸시 알림 서버를 켤지 정합니다.
+- `GITHUB_WEBHOOK_SECRET`: GitHub와 봇만 공유하는 Webhook 비밀키입니다.
+- `GITHUB_WEBHOOK_CHANNEL_ID`: 푸시 알림을 받을 Discord 채널 ID입니다.
+- `GITHUB_WEBHOOK_HOST`, `GITHUB_WEBHOOK_PORT`: 로컬 Webhook 수신 주소입니다.
 
 ## 3. Ollama 준비
 
@@ -124,3 +133,56 @@ Discord에서 `/대화 초기화`를 실행하면 명령을 실행한 사용자�
 - 혐오·심각한 괴롭힘, 현실적인 위협·위험 요청은 코드 단계에서 제한합니다.
 - 필터 규칙과 답변은 `config/moderation.yml`에서 수정할 수 있습니다.
 - 필터 로그는 `logs/moderation.log`에 시각과 분류만 기록하며 사용자 메시지 원문은 남기지 않습니다.
+
+## 9. GitHub 푸시 알림
+
+GitHub가 공개 HTTPS 주소로 Webhook을 보내면, 봇이 서명을 확인한 뒤 지정한 Discord 채널에 저장소, 브랜치, 작성자와 최근 커밋을 임베드로 알립니다. `push` 외 이벤트는 무시하고, 같은 delivery ID가 다시 들어오면 중복 알림을 보내지 않습니다.
+
+### Ubuntu 서버의 `.env` 설정
+
+프로젝트 폴더에서 비밀키를 하나 만듭니다.
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Discord에서 `사용자 설정` > `고급` > `개발자 모드`를 켠 뒤, 알림을 받을 채널을 우클릭해 `채널 ID 복사`를 누릅니다. 서버의 `.env`에 다음 값을 추가합니다.
+
+```env
+GITHUB_WEBHOOK_ENABLED=true
+GITHUB_WEBHOOK_SECRET=방금_만든_비밀키
+GITHUB_WEBHOOK_CHANNEL_ID=복사한_Discord_채널_ID
+GITHUB_WEBHOOK_HOST=127.0.0.1
+GITHUB_WEBHOOK_PORT=8080
+```
+
+systemd로 실행 중이라면 봇을 재시작하고 상태를 확인합니다.
+
+```bash
+sudo systemctl restart discordbot
+sudo journalctl -u discordbot -n 50 --no-pager
+curl http://127.0.0.1:8080/github/health
+```
+
+정상이면 마지막 명령에 `{"status": "ok"}`가 나옵니다. 봇 역할에는 알림 채널의 `채널 보기`, `메시지 보내기`, `링크 첨부` 권한이 필요합니다.
+
+### 공개 HTTPS 주소 연결
+
+GitHub에서는 서버의 `127.0.0.1`로 직접 접속할 수 없습니다. Nginx, Caddy 또는 HTTPS 터널을 사용해 공개 주소의 `/github/webhook` 요청을 `http://127.0.0.1:8080/github/webhook`으로 전달해야 합니다.
+
+예시 Payload URL:
+
+```text
+https://bot.example.com/github/webhook
+```
+
+### GitHub 저장소 설정
+
+1. GitHub 저장소의 `Settings` > `Webhooks` > `Add webhook`을 엽니다.
+2. `Payload URL`에 공개 HTTPS Webhook 주소를 입력합니다.
+3. `Content type`은 `application/json`을 선택합니다.
+4. `Secret`에는 `.env`의 `GITHUB_WEBHOOK_SECRET`과 정확히 같은 값을 입력합니다.
+5. 이벤트는 `Just the push event`를 선택하고 `Active`를 켭니다.
+6. Webhook을 만든 뒤 `Recent Deliveries`의 `ping` 응답이 `200`인지 확인합니다.
+
+비밀키는 Git에 커밋하거나 Discord에 올리지 마세요. GitHub Webhook 설정을 저장해도 알림이 오지 않으면 먼저 공개 HTTPS 연결과 봇의 채널 권한을 확인합니다.

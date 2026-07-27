@@ -12,6 +12,7 @@ from config import (
     OLLAMA_WARMUP_ON_START,
     USER_COOLDOWN_SECONDS,
 )
+from github_webhook import start_github_webhook_server
 from llm import (
     LlmConnectionError,
     LlmResponseError,
@@ -415,6 +416,11 @@ async def on_ready() -> None:
             print(f"슬래시 명령어를 동기화했습니다: {len(synced_commands)}개")
 
     print(f"Discord에 로그인했습니다: {client.user}")
+
+    try:
+        await start_github_webhook_server(client)
+    except Exception as error:
+        print(f"GitHub Webhook 서버 시작 오류: {error}")
 
     if (
         OLLAMA_WARMUP_ON_START

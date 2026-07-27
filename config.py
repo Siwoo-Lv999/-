@@ -33,6 +33,17 @@ def read_keep_alive_environment() -> int | str:
         return raw_value
 
 
+def read_optional_int_environment(name: str) -> int | None:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return None
+
+    try:
+        return int(raw_value)
+    except ValueError as error:
+        raise RuntimeError(f"{name}은 정수여야 합니다.") from error
+
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OLLAMA_BASE_URL = os.getenv(
     "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
@@ -53,6 +64,16 @@ if not MODERATION_CONFIG_PATH.is_absolute():
 
 IGNORE_BOT_MESSAGES = read_bool_environment("IGNORE_BOT_MESSAGES", True)
 MAX_CONCURRENT_LLM_REQUESTS = 1
+GITHUB_WEBHOOK_ENABLED = read_bool_environment(
+    "GITHUB_WEBHOOK_ENABLED", False
+)
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "").strip()
+GITHUB_WEBHOOK_CHANNEL_ID = read_optional_int_environment(
+    "GITHUB_WEBHOOK_CHANNEL_ID"
+)
+GITHUB_WEBHOOK_HOST = os.getenv(
+    "GITHUB_WEBHOOK_HOST", "127.0.0.1"
+).strip()
 
 try:
     OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))
@@ -80,6 +101,10 @@ try:
     )
 except ValueError as error:
     raise RuntimeError("CONVERSATION_RETENTION_DAYS는 정수여야 합니다.") from error
+try:
+    GITHUB_WEBHOOK_PORT = int(os.getenv("GITHUB_WEBHOOK_PORT", "8080"))
+except ValueError as error:
+    raise RuntimeError("GITHUB_WEBHOOK_PORT는 정수여야 합니다.") from error
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN이 설정되지 않았습니다. .env 파일을 확인해 주세요.")
@@ -105,3 +130,23 @@ if CONVERSATION_RETENTION_DAYS < 0:
     raise RuntimeError(
         "CONVERSATION_RETENTION_DAYS는 0 이상의 정수여야 합니다."
     )
+
+if not GITHUB_WEBHOOK_HOST:
+    raise RuntimeError("GITHUB_WEBHOOK_HOST는 비어 있을 수 없습니다.")
+
+if not 1 <= GITHUB_WEBHOOK_PORT <= 65535:
+    raise RuntimeError("GITHUB_WEBHOOK_PORT는 1부터 65535 사이여야 합니다.")
+
+if GITHUB_WEBHOOK_ENABLED:
+    if not GITHUB_WEBHOOK_SECRET:
+        raise RuntimeError(
+            "GitHub Webhook을 사용하려면 GITHUB_WEBHOOK_SECRET이 필요합니다."
+        )
+    if (
+        GITHUB_WEBHOOK_CHANNEL_ID is None
+        or GITHUB_WEBHOOK_CHANNEL_ID <= 0
+    ):
+        raise RuntimeError(
+            "GitHub Webhook을 사용하려면 올바른 "
+            "GITHUB_WEBHOOK_CHANNEL_ID가 필요합니다."
+        )
