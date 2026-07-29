@@ -40,24 +40,26 @@ EMOJI_PATTERN = re.compile(
 DANGLING_HONORIFIC_PATTERN = re.compile(
     r"(?<!\S)(께서는|께서|께도|께만|께)(?=\s|[,.?!]|$)"
 )
+KEI_NAME_PATTERN = r"케이(?:짱|쨩|님|씨)?"
+KEI_CALL_PATTERN = rf"{KEI_NAME_PATTERN}(?:아|야)?"
 CUTE_COMPLIMENT_PATTERN = re.compile(
-    r"^(?:(?:케이(?:짱)?|너|넌|네가|니가))?"
+    rf"^(?:(?:{KEI_NAME_PATTERN}|너|넌|네가|니가))?"
     r"(?:(?:진짜|정말|너무|완전|엄청|되게|무척|좀|개))*"
     r"(?:귀여워|귀엽다|귀엽네|귀엽구나|귀엽군|귀엽잖아|"
     r"귀엽다고|귀여운데|귀여움)$"
 )
 AFFECTION_PATTERN = re.compile(
-    r"^(?:(?:케이(?:짱)?)(?:아|야)?|너|널|너를)?"
+    rf"^(?:(?:{KEI_CALL_PATTERN})|너|널|너를)?"
     r"(?:(?:진짜|정말|너무|많이|엄청|완전))*"
     r"(?:사랑해|사랑한다|사랑한다고|좋아해|좋아한다|좋아한다고)$"
 )
 GREETING_PATTERN = re.compile(
-    r"^(?:(?:케이(?:짱)?)(?:아|야)?)?"
-    r"(?:안녕|좋은아침|좋은저녁)"
-    r"(?:케이(?:짱)?)?$"
+    rf"^(?:{KEI_CALL_PATTERN})?"
+    r"(?:안녕하세요|안녕|하이|좋은아침|좋은저녁|반갑습니다|반가워요|반가워)"
+    rf"(?:{KEI_CALL_PATTERN})?$"
 )
 THANKS_PATTERN = re.compile(
-    r"^(?:(?:케이(?:짱)?)(?:아|야)?)?"
+    rf"^(?:{KEI_CALL_PATTERN})?"
     r"(?:고마워|고맙다|고맙네|감사해|감사합니다)$"
 )
 LAUGHTER_PATTERN = re.compile(r"^(?:히히+|헤헤+|하하+|[ㅋㅎ]{2,})$")
