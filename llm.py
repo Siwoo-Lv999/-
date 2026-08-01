@@ -1,6 +1,5 @@
 import asyncio
 import json
-import random
 import re
 from pathlib import Path
 
@@ -37,62 +36,6 @@ class LlmResponseError(Exception):
 EMOJI_PATTERN = re.compile(
     "[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]"
 )
-DANGLING_HONORIFIC_PATTERN = re.compile(
-    r"(?<!\S)(께서는|께서|께도|께만|께)(?=\s|[,.?!]|$)"
-)
-KEI_NAME_PATTERN = r"케이(?:짱|쨩|님|씨)?"
-KEI_CALL_PATTERN = rf"{KEI_NAME_PATTERN}(?:아|야)?"
-CUTE_COMPLIMENT_PATTERN = re.compile(
-    rf"^(?:(?:{KEI_NAME_PATTERN}|너|넌|네가|니가))?"
-    r"(?:(?:진짜|정말|너무|완전|엄청|되게|무척|좀|개))*"
-    r"(?:귀여워|귀엽다|귀엽네|귀엽구나|귀엽군|귀엽잖아|"
-    r"귀엽다고|귀여운데|귀여움)$"
-)
-AFFECTION_PATTERN = re.compile(
-    rf"^(?:(?:{KEI_CALL_PATTERN})|너|널|너를)?"
-    r"(?:(?:진짜|정말|너무|많이|엄청|완전))*"
-    r"(?:사랑해|사랑한다|사랑한다고|좋아해|좋아한다|좋아한다고)$"
-)
-GREETING_PATTERN = re.compile(
-    rf"^(?:{KEI_CALL_PATTERN})?"
-    r"(?:안녕하세요|안녕|하이|좋은아침|좋은저녁|반갑습니다|반가워요|반가워)"
-    rf"(?:{KEI_CALL_PATTERN})?$"
-)
-THANKS_PATTERN = re.compile(
-    rf"^(?:{KEI_CALL_PATTERN})?"
-    r"(?:고마워|고맙다|고맙네|감사해|감사합니다)$"
-)
-LAUGHTER_PATTERN = re.compile(r"^(?:히히+|헤헤+|하하+|[ㅋㅎ]{2,})$")
-CUTE_REPLIES = (
-    "귀, 귀엽다고 하지 말라고요, 선생님! ……갑자기 그런 말을 하면 곤란하잖아요.",
-    "아, 진짜…… 또 놀리시는 건가요, 선생님? 그런 말로 반응을 보려고 하지 마세요!",
-    "그, 그런 말은 갑자기 왜 하시는 건가요, 선생님?! ……싫다는 뜻은 아니지만요.",
-    "제가 어디가 귀엽다는 건가요, 선생님? 정말이지…… 아무렇지도 않으니까 그만 웃으세요.",
-)
-AFFECTION_REPLIES = (
-    "가, 갑자기 그런 말을 하면 곤란하잖아요, 선생님! ……저도 같은 마음이니까요.",
-    "아, 진짜…… 부끄러운 말을 아무렇지도 않게 하시네요, 선생님. 저도 좋아한다고요.",
-    "그, 그렇게 솔직하게 말씀하시면 제가 뭐라고 해야 하나요, 선생님…… 저도 싫지 않아요.",
-    "선생님은 정말 못 하는 말이 없네요! ……그래도 저도 선생님을 좋아하니까요.",
-)
-LAUGHTER_REPLIES = (
-    "뭘 그렇게 히죽히죽 웃고 있는 건가요, 선생님?!",
-    "왜 혼자 그렇게 웃는 건가요, 선생님? 또 무슨 장난을 꾸미고 있죠?",
-    "……그 웃음은 뭔가요, 선생님? 분명 저를 놀릴 생각이죠!",
-    "아, 왜 그렇게 웃는 건가요, 선생님?! 수상하잖아요.",
-)
-GREETING_REPLIES = (
-    "안녕하세요, 선생님. 이제야 오셨네요.",
-    "오셨군요, 선생님. ……기다린 건 아니니까요.",
-    "어서 오세요, 선생님. 오늘도 잘 부탁드리죠.",
-)
-THANKS_REPLIES = (
-    "해야 할 일을 했을 뿐이에요, 선생님. ……그래도 도움이 됐다면 다행이네요.",
-    "이 정도로 감사까지 하실 필요는 없어요, 선생님. 맡은 일을 한 것뿐이니까요.",
-    "당연한 일을 했을 뿐이에요, 선생님. ……그렇게 말씀해 주시면 나쁘진 않네요.",
-)
-_last_direct_replies: dict[str, str] = {}
-_direct_reply_pools: dict[str, list[str]] = {}
 _llm_request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM_REQUESTS)
 
 
@@ -140,62 +83,8 @@ def load_conversation_examples() -> list[dict[str, str]]:
     return messages
 
 
-def _normalize_short_intent_text(content: str) -> str:
-    compact = re.sub(r"[\s~!?.…,，]+", "", content.lower())
-    return re.sub(r"[ㅋㅎ]+$", "", compact)
-
-
-def _select_direct_reply(category: str, replies: tuple[str, ...]) -> str:
-    previous_reply = _last_direct_replies.get(category)
-    reply_pool = _direct_reply_pools.get(category)
-    if not reply_pool:
-        reply_pool = list(replies)
-        random.shuffle(reply_pool)
-        if (
-            previous_reply is not None
-            and len(reply_pool) > 1
-            and reply_pool[-1] == previous_reply
-        ):
-            reply_pool[0], reply_pool[-1] = reply_pool[-1], reply_pool[0]
-        _direct_reply_pools[category] = reply_pool
-
-    selected_reply = reply_pool.pop()
-    _last_direct_replies[category] = selected_reply
-    return selected_reply
-
-
-def find_direct_reply(user_message: str) -> str | None:
-    compact = re.sub(r"[\s~!?.…,，]+", "", user_message.lower())
-    if LAUGHTER_PATTERN.fullmatch(compact):
-        return _select_direct_reply("laughter", LAUGHTER_REPLIES)
-
-    compact_without_laughter = _normalize_short_intent_text(user_message)
-    if CUTE_COMPLIMENT_PATTERN.fullmatch(compact_without_laughter):
-        return _select_direct_reply("cute", CUTE_REPLIES)
-    if AFFECTION_PATTERN.fullmatch(compact_without_laughter):
-        return _select_direct_reply("affection", AFFECTION_REPLIES)
-    if GREETING_PATTERN.fullmatch(compact_without_laughter):
-        return _select_direct_reply("greeting", GREETING_REPLIES)
-    if THANKS_PATTERN.fullmatch(compact_without_laughter):
-        return _select_direct_reply("thanks", THANKS_REPLIES)
-    return None
-
-
 def normalize_persona_reply(reply: str) -> str:
     reply = EMOJI_PATTERN.sub("", reply)
-    reply = re.sub(
-        r"(저는|제가)\s+(?:께서는|께서)\s+",
-        r"\1 ",
-        reply,
-    )
-    reply = DANGLING_HONORIFIC_PATTERN.sub(
-        lambda match: f"선생님{match.group(1)}",
-        reply,
-    )
-
-    if "선생님" not in reply:
-        reply = f"선생님, {reply}"
-
     reply = re.sub(r"\s+([,.?!])", r"\1", reply)
     reply = re.sub(r",\s*([,.?!])", r"\1", reply)
     reply = re.sub(r" {2,}", " ", reply)
@@ -252,12 +141,15 @@ async def warm_up_model() -> None:
 async def generate_reply(
     user_message: str,
     conversation_history: list[dict[str, str]] | None = None,
+    speaker_name: str | None = None,
 ) -> str:
-    direct_reply = find_direct_reply(user_message)
-    if direct_reply is not None:
-        return direct_reply
-
     system_prompt = load_system_prompt()
+    if speaker_name:
+        safe_speaker_name = re.sub(r"\s+", " ", speaker_name).strip()[:80]
+        if safe_speaker_name:
+            system_prompt += (
+                f'\n현재 대화 상대의 표시 이름은 "{safe_speaker_name}"입니다.'
+            )
     conversation_examples = load_conversation_examples()
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(conversation_examples)

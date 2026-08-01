@@ -47,21 +47,21 @@ from storage import (
 )
 
 
-EMPTY_MESSAGE_REPLY = "무엇을 도와드릴까요, 선생님?"
+EMPTY_MESSAGE_REPLY = "무엇을 도와드릴까요?"
 CONNECTION_ERROR_REPLY = (
-    "지금은 답변을 제대로 준비할 수 없네요, 선생님. "
+    "지금은 답변을 제대로 준비할 수 없네요. "
     "잠시 뒤에 다시 말씀해 주세요."
 )
 TIMEOUT_ERROR_REPLY = (
-    "생각을 정리하는 데 너무 오래 걸렸네요, 선생님. "
+    "생각을 정리하는 데 너무 오래 걸렸네요. "
     "잠시 뒤에 다시 시도해 주세요."
 )
 RESPONSE_ERROR_REPLY = (
-    "답변을 만들다가 문제가 생겼습니다, 선생님. "
+    "답변을 만들다가 문제가 생겼습니다. "
     "잠시 뒤에 다시 말씀해 주세요."
 )
 DISCORD_MESSAGE_LIMIT = 2000
-COOLDOWN_REPLY = "조금만 기다렸다가 다시 말씀해 주세요, 선생님."
+COOLDOWN_REPLY = "조금만 기다렸다가 다시 말씀해 주세요."
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -663,10 +663,10 @@ async def reset_conversation(interaction: discord.Interaction) -> None:
         return
 
     if deleted_count == 0:
-        result_message = "삭제할 대화 기록이 없습니다, 선생님."
+        result_message = "삭제할 대화 기록이 없습니다."
     else:
         result_message = (
-            f"선생님의 저장된 대화 기록 {deleted_count}개를 모두 삭제했습니다."
+            f"저장된 대화 기록 {deleted_count}개를 모두 삭제했습니다."
         )
 
     await interaction.followup.send(result_message, ephemeral=True)
@@ -819,6 +819,7 @@ async def process_conversation_message(
             generated_reply = await generate_reply(
                 user_message,
                 conversation_history,
+                message.author.display_name,
             )
             reply = generated_reply
         except LlmConnectionError as error:
