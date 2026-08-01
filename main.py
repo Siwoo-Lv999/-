@@ -266,16 +266,20 @@ async def configure_auto_role(
         )
         return
 
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.response.defer(ephemeral=False, thinking=True)
     try:
         await set_auto_role(guild.id, role.id)
     except RuntimeError as error:
-        await interaction.followup.send(str(error), ephemeral=True)
+        print(f"자동 역할 설정 오류: {error}")
+        await interaction.followup.send(
+            "자동 지급 역할을 저장하는 중 문제가 발생했습니다.",
+            ephemeral=False,
+        )
         return
 
     await interaction.followup.send(
         f"새로 들어오는 사람에게 {role.mention} 역할을 지급하겠습니다.",
-        ephemeral=True,
+        ephemeral=False,
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -313,7 +317,7 @@ async def show_auto_role(interaction: discord.Interaction) -> None:
 
     await interaction.response.send_message(
         result,
-        ephemeral=True,
+        ephemeral=False,
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -335,11 +339,15 @@ async def disable_auto_role(interaction: discord.Interaction) -> None:
         )
         return
 
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.response.defer(ephemeral=False, thinking=True)
     try:
         changed = await remove_auto_role(guild.id)
     except RuntimeError as error:
-        await interaction.followup.send(str(error), ephemeral=True)
+        print(f"자동 역할 해제 오류: {error}")
+        await interaction.followup.send(
+            "자동 지급 역할을 해제하는 중 문제가 발생했습니다.",
+            ephemeral=False,
+        )
         return
 
     result = (
@@ -347,7 +355,7 @@ async def disable_auto_role(interaction: discord.Interaction) -> None:
         if changed
         else "현재 설정된 자동 지급 역할이 없습니다."
     )
-    await interaction.followup.send(result, ephemeral=True)
+    await interaction.followup.send(result, ephemeral=False)
 
 
 @github_channel_group.command(

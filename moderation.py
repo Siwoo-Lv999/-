@@ -62,7 +62,7 @@ def _load_rules() -> list[tuple[str, str, list[re.Pattern[str]]]]:
 
 
 def _get_logger() -> logging.Logger:
-    logger = logging.getLogger("kei.moderation")
+    logger = logging.getLogger("luna.moderation")
     if logger.handlers:
         return logger
 
