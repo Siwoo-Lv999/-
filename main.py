@@ -39,6 +39,7 @@ from llm import (
 from moderation import check_message
 from persona_guard import (
     PERSONA_CHANGE_REJECT_REPLY,
+    copies_forced_literal,
     is_persona_change_request,
 )
 from storage import (
@@ -829,12 +830,19 @@ async def process_conversation_message(
     llm_started_at = time.perf_counter()
     async with message.channel.typing():
         try:
-            generated_reply = await generate_reply(
+            model_reply = await generate_reply(
                 user_message,
                 conversation_history,
                 message.author.display_name,
             )
-            reply = generated_reply
+            output_moderation = check_message(model_reply)
+            if output_moderation is not None:
+                _, reply = output_moderation
+            elif copies_forced_literal(user_message, model_reply):
+                reply = PERSONA_CHANGE_REJECT_REPLY
+            else:
+                generated_reply = model_reply
+                reply = model_reply
         except LlmConnectionError as error:
             print(f"Ollama 연결 오류: {error}")
             reply = CONNECTION_ERROR_REPLY
