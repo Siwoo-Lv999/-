@@ -80,7 +80,8 @@ def _prune_all_sessions(connection: sqlite3.Connection) -> None:
     )
 
 
-def initialize_database() -> None:
+def initialize_database(*, clear_conversations: bool = False) -> int:
+    deleted_record_count = 0
     try:
         DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with _connect() as connection:
@@ -149,10 +150,22 @@ def initialize_database() -> None:
             connection.execute("DROP TABLE IF EXISTS user_memories")
             _prune_all_sessions(connection)
             _purge_expired_conversation_data(connection)
+
+            if clear_conversations:
+                message_cursor = connection.execute(
+                    "DELETE FROM conversation_messages"
+                )
+                session_cursor = connection.execute(
+                    "DELETE FROM conversation_sessions"
+                )
+                deleted_record_count = (
+                    message_cursor.rowcount + session_cursor.rowcount
+                )
     except (OSError, sqlite3.Error) as error:
         raise ConversationStorageError(
             "대화 데이터베이스를 초기화할 수 없습니다."
         ) from error
+    return deleted_record_count
 
 
 def _get_session_record(session_key: str) -> dict[str, object]:

@@ -909,6 +909,10 @@ async def on_message(message: discord.Message) -> None:
 
 
 if __name__ == "__main__":
-    initialize_database()
+    deleted_record_count = initialize_database(clear_conversations=True)
+    print(
+        "봇 시작 시 저장된 대화 기록을 초기화했습니다: "
+        f"{deleted_record_count}개"
+    )
     initialize_auto_roles()
     client.run(DISCORD_TOKEN)
