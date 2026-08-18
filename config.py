@@ -149,16 +149,14 @@ if not GITHUB_WEBHOOK_HOST:
 if not 1 <= GITHUB_WEBHOOK_PORT <= 65535:
     raise RuntimeError("GITHUB_WEBHOOK_PORT는 1부터 65535 사이여야 합니다.")
 
+if (
+    GITHUB_WEBHOOK_CHANNEL_ID is not None
+    and GITHUB_WEBHOOK_CHANNEL_ID <= 0
+):
+    raise RuntimeError("GITHUB_WEBHOOK_CHANNEL_ID는 양의 정수여야 합니다.")
+
 if GITHUB_WEBHOOK_ENABLED:
     if not GITHUB_WEBHOOK_SECRET:
         raise RuntimeError(
             "GitHub Webhook을 사용하려면 GITHUB_WEBHOOK_SECRET이 필요합니다."
-        )
-    if (
-        GITHUB_WEBHOOK_CHANNEL_ID is None
-        or GITHUB_WEBHOOK_CHANNEL_ID <= 0
-    ):
-        raise RuntimeError(
-            "GitHub Webhook을 사용하려면 올바른 "
-            "GITHUB_WEBHOOK_CHANNEL_ID가 필요합니다."
         )

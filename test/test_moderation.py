@@ -45,6 +45,17 @@ class ModerationTests(unittest.TestCase):
     def test_allows_ordinary_message(self) -> None:
         self.assertIsNone(self.check_without_file_log("오늘 날씨가 좋아"))
 
+    def test_filter_still_works_when_log_file_cannot_be_opened(self) -> None:
+        with patch.object(
+            moderation,
+            "_get_logger",
+            side_effect=OSError("읽기 전용 경로"),
+        ):
+            result = moderation.check_message("그 새끼 때문에 화가 나")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "abusive_language")
+
 
 if __name__ == "__main__":
     unittest.main()

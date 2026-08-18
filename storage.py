@@ -35,6 +35,19 @@ def build_session_key(
     return f"guild:{guild_id}:channel:{channel_id}:user:{user_id}"
 
 
+def validate_session_identity(
+    session_key: str,
+    guild_id: int | None,
+    channel_id: int,
+    user_id: int,
+) -> None:
+    expected_session_key = build_session_key(guild_id, channel_id, user_id)
+    if session_key != expected_session_key:
+        raise ConversationStorageError(
+            "대화 세션과 사용자 정보가 일치하지 않습니다."
+        )
+
+
 def _purge_expired_conversation_data(
     connection: sqlite3.Connection,
 ) -> None:
@@ -273,6 +286,7 @@ async def save_exchange(
     user_message: str,
     assistant_message: str,
 ) -> None:
+    validate_session_identity(session_key, guild_id, channel_id, user_id)
     try:
         await asyncio.to_thread(
             _save_exchange,

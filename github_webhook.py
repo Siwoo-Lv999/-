@@ -65,7 +65,9 @@ def verify_github_signature(
 
 def normalize_repository_name(repository_name: str) -> str:
     normalized_name = repository_name.strip()
-    repository_parts = normalized_name.split("/")
+    repository_parts = [
+        part.strip() for part in normalized_name.split("/")
+    ]
     if (
         len(repository_parts) != 2
         or not all(part.strip() for part in repository_parts)
@@ -73,7 +75,7 @@ def normalize_repository_name(repository_name: str) -> str:
         raise RuntimeError(
             "GitHub 저장소 이름은 owner/repository 형식이어야 합니다."
         )
-    return normalized_name.casefold()
+    return "/".join(repository_parts).casefold()
 
 
 def _validate_channel_id(channel_id: int) -> int:

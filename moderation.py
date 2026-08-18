@@ -83,6 +83,10 @@ MODERATION_RULES = _load_rules()
 def check_message(content: str) -> tuple[str, str] | None:
     for category, response, patterns in MODERATION_RULES:
         if any(pattern.search(content) for pattern in patterns):
-            _get_logger().warning(category)
+            try:
+                _get_logger().warning(category)
+            except OSError as error:
+                # 로그 파일 문제 때문에 안전 필터 자체가 중단되면 안 된다.
+                print(f"안전 필터 로그 기록 오류: {error}")
             return category, response
     return None

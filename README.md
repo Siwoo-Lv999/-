@@ -58,7 +58,7 @@ GITHUB_WEBHOOK_PORT=8080
 - `CONVERSATION_RETENTION_DAYS`: 대화 보존 일수입니다. `0`은 무기한이며 `7`, `30`처럼 설정할 수 있습니다.
 - `GITHUB_WEBHOOK_ENABLED`: GitHub 푸시 알림 서버를 켤지 정합니다.
 - `GITHUB_WEBHOOK_SECRET`: GitHub와 봇만 공유하는 Webhook 비밀키입니다.
-- `GITHUB_WEBHOOK_CHANNEL_ID`: 저장소별 설정이 없을 때 사용할 기본 Discord 채널 ID입니다.
+- `GITHUB_WEBHOOK_CHANNEL_ID`: 저장소별 설정이 없을 때 사용할 선택적인 기본 Discord 채널 ID입니다. 비워 두면 매핑되지 않은 저장소는 알림을 보내지 않습니다.
 - `GITHUB_WEBHOOK_CHANNELS_PATH`: 저장소별 Discord 채널 설정 파일 경로입니다.
 - `GITHUB_WEBHOOK_BRANCHES_PATH`: 저장소별 허용 브랜치 설정 파일 경로입니다.
 - `GITHUB_WEBHOOK_HOST`, `GITHUB_WEBHOOK_PORT`: 로컬 Webhook 수신 주소입니다.
@@ -108,6 +108,7 @@ ollama serve
 - 오래된 대화의 요약이나 장기 기억은 만들지 않습니다.
 - 멘션되지 않은 서버 메시지, 다른 봇의 메시지, 오류 안내 메시지는 저장하지 않습니다.
 - Discord 사용자 이름과 서버 닉네임은 저장하지 않습니다.
+- 답변 시 현재 메시지를 보낸 사용자의 Discord 표시 이름만 호칭에 사용하며, 대화 내용에 등장한 다른 사람 이름을 현재 사용자로 오인하지 않도록 시스템 규칙으로 분리합니다.
 - 정상적으로 생성된 답변은 항상 최근 대화에 저장됩니다.
 - 봇이 실행 중인 동안에만 세션별 최근 5회 대화를 기억합니다.
 - 대화 관련 슬래시 명령은 `/대화 초기화`만 제공합니다.
