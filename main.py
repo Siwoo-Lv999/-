@@ -36,6 +36,10 @@ from llm import (
     warm_up_model,
 )
 from moderation import check_message
+from persona_guard import (
+    PERSONA_CHANGE_REJECT_REPLY,
+    is_persona_change_request,
+)
 from storage import (
     ConversationStorageError,
     build_session_key,
@@ -900,6 +904,11 @@ async def on_message(message: discord.Message) -> None:
             _, moderation_reply = moderation_result
             async with message.channel.typing():
                 await send_reply(message, moderation_reply)
+            return
+
+        if is_persona_change_request(user_message):
+            async with message.channel.typing():
+                await send_reply(message, PERSONA_CHANGE_REJECT_REPLY)
             return
 
         async with get_user_operation_lock(message.author.id):
