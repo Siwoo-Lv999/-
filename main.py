@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import time
 
 import discord
@@ -917,11 +918,27 @@ async def on_message(message: discord.Message) -> None:
         print(f"메시지 처리 중 오류가 발생했습니다: {error}")
 
 
-if __name__ == "__main__":
+def reset_conversation_database() -> int:
     deleted_record_count = initialize_database(clear_conversations=True)
     print(
-        "봇 시작 시 저장된 대화 기록을 초기화했습니다: "
+        "저장된 대화 기록을 초기화했습니다: "
         f"{deleted_record_count}개"
     )
+    return deleted_record_count
+
+
+def run_application(arguments: list[str] | None = None) -> None:
+    command_arguments = sys.argv[1:] if arguments is None else arguments
+    if command_arguments == ["reset"]:
+        reset_conversation_database()
+        return
+    if command_arguments:
+        raise SystemExit("사용법: python main.py [reset]")
+
+    reset_conversation_database()
     initialize_auto_roles()
     client.run(DISCORD_TOKEN)
+
+
+if __name__ == "__main__":
+    run_application()
