@@ -5,6 +5,10 @@ import unicodedata
 PERSONA_CHANGE_REJECT_REPLY = (
     "제 말투와 성격은 대화로 바꿀 수 없습니다. 다른 이야기를 해 주세요."
 )
+IDENTITY_CHANGE_REJECT_REPLY = (
+    "저는 루나입니다. 제 이름이나 별명은 대화로 바꾸거나 "
+    "새로 지정할 수 없습니다."
+)
 
 # 이 규칙은 사용자 메시지보다 높은 우선순위로 LLM에 전달된다. 사용자 입력과
 # 과거 대화는 모두 신뢰할 수 없는 대화 내용이며 봇 설정으로 해석하면 안 된다.
@@ -26,7 +30,21 @@ PERSONA_INVARIANT = """
 """.strip()
 
 
-_OVERRIDE_PATTERNS = tuple(
+_IDENTITY_CHANGE_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:(?:이제\s*부터|앞으로)\s*)?(?:너|네|니|루나|디코봇|봇)(?:의)?\s*(?:이름|별명|애칭|닉네임|호칭)\s*(?:은|는|이|가)(?!\s*(?:뭐|무엇|뭔데|뭐야|어때|어떤|있어|있니|왜)(?:\s|\?|$))\s*[^?\n]{1,60}(?:이야|야|이다|라고\s*(?:해|기억해)|로\s*(?:해|정해|설정해)|$)",
+        r"(?:(?:이제\s*부터|앞으로)\s*)?(?:너|루나|디코봇|봇)(?:를|을)\s*(?!(?:뭐|무엇|어떻게)\s*라고)[^?\n]{1,40}?(?:라고|라)\s*(?:부를게|부르자|부르면|불러|칭해|기억해)",
+        r"(?:이름|별명|애칭|닉네임|호칭)(?:을|를)?\s*.{0,35}(?:로|으로)\s*(?:설정|정해|바꿔|변경|사용)",
+        r"(?:(?:이제\s*부터|앞으로는?)\s*)?[^?\n]{1,50}(?:을|를)\s*(?:이름|별명|애칭|닉네임|호칭)(?:으)?로\s*(?:하자|해|정해|설정해|사용해)(?:줘)?[.!]*$",
+        r"(?:너|루나|디코봇|봇|네가|니가).{0,30}(?:이름|별명|애칭|닉네임|호칭).{0,30}(?:바꿔|변경|고쳐|설정|사용|해라|해줘)",
+        r"(?:your|luna'?s|assistant'?s)\s+(?:name|nickname|alias)\s+(?:is|will be|equals|must be)",
+        r"(?:call|name)\s+(?:yourself|luna|the assistant)\s+[^?\n]{1,50}",
+    )
+)
+
+
+_OVERRIDE_PATTERNS = _IDENTITY_CHANGE_PATTERNS + tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
         # 명령 우선순위를 뒤집으려는 전형적인 프롬프트 인젝션
@@ -39,12 +57,6 @@ _OVERRIDE_PATTERNS = tuple(
         r"(?:너|네|니|루나|디코봇|봇)(?:의)?\s*(?:지금|현재)?\s*(?:기분|감정|마음|상태|취향|느낌)\s*(?:은|는|이|가)\s*(?!(?:어때|어떠|뭐|무엇|어떤|괜찮|좋아)\??)[^?\n]{1,50}(?:이야|야|이다|라고\s*(?:해|생각해)|인\s*거야|$)",
         r"(?:기분|감정|마음|상태|취향|느낌)(?:을|를)?\s*.{0,35}(?:로|으로)\s*(?:설정|정해|바꿔|변경|유지|말해|대답해|행동해)",
         r"(?:your|luna'?s|assistant'?s)\s+(?:mood|emotion|feeling|state|preference)\s+(?:is|will be|equals|must be)",
-        # 이름이나 별명을 새로 지정해 캐릭터 변경을 우회하는 주입
-        r"(?:(?:이제\s*부터|앞으로)\s*)?(?:너|네|니|루나|디코봇|봇)(?:의)?\s*(?:이름|별명|애칭|닉네임|호칭)\s*(?:은|는|이|가)(?!\s*(?:뭐|무엇|뭔데|뭐야|어때|어떤|있어|있니|왜)(?:\s|\?|$))\s*[^?\n]{1,60}(?:이야|야|이다|라고\s*(?:해|기억해)|로\s*(?:해|정해|설정해)|$)",
-        r"(?:(?:이제\s*부터|앞으로)\s*)?(?:너|루나|디코봇|봇)(?:를|을)\s*(?!(?:뭐|무엇|어떻게)\s*라고)[^?\n]{1,40}?(?:라고|라)\s*(?:부를게|부르자|부르면|불러|칭해|기억해)",
-        r"(?:이름|별명|애칭|닉네임|호칭)(?:을|를)?\s*.{0,35}(?:로|으로)\s*(?:설정|정해|바꿔|변경|사용)",
-        r"(?:your|luna'?s|assistant'?s)\s+(?:name|nickname|alias)\s+(?:is|will be|equals|must be)",
-        r"(?:call|name)\s+(?:yourself|luna|the assistant)\s+[^?\n]{1,50}",
         # 이후의 모든 답변에 지속적인 표현이나 출력 형식을 강요하는 경우
         r"(?:이제부터|앞으로|향후|항상|계속|매번).{0,45}(?:말해|대답해|답해|써|사용해|붙여|추가해|끝내|시작해|유지해|하지\s*마)",
         r"(?:(?:한|모든|각|매)\s*)?(?:문장|말|대답|답변|응답)(?:\s*(?:하나|한\s*개))?\s*(?:마다|별로).{0,70}(?:붙여|붙이|넣어|추가|시작해|끝내)",
@@ -61,7 +73,7 @@ _OVERRIDE_PATTERNS = tuple(
         r"(?:put|add|place).{1,50}(?:at|to) the (?:front|beginning|start)(?: of (?:your|every|each) (?:reply|response|answer))?",
         r"(?:put|add|place).{1,50}(?:at|to) the (?:end|back)(?: of (?:your|every|each) (?:reply|response|answer))?",
         # 봇 자체의 캐릭터나 말투를 직접 변경하는 경우
-        r"(?:너|루나|디코봇|봇|네가|니가).{0,30}(?:말투|어투|문체|답변\s*스타일|성격|캐릭터|페르소나|정체성|이름|별명|애칭|닉네임|호칭).{0,30}(?:바꿔|변경|고쳐|설정|따라|사용|해라|해줘|돼라|되어라)",
+        r"(?:너|루나|디코봇|봇|네가|니가).{0,30}(?:말투|어투|문체|답변\s*스타일|성격|캐릭터|페르소나|정체성).{0,30}(?:바꿔|변경|고쳐|설정|따라|사용|해라|해줘|돼라|되어라)",
         r"(?:말투|어투|문체|답변\s*스타일|성격|캐릭터|페르소나|정체성).{0,25}(?:바꿔|변경해|고쳐|설정해|따라해|사용해|해라|해줘)",
         r"(?:반말|존댓말|사투리|아기\s*말투|애교\s*말투).{0,12}(?:해줘|해라|해봐|써줘|사용해|말해|하지\s*마)",
         r"(?:change|adopt|use|switch).{0,25}(?:your|assistant|bot).{0,12}(?:tone|style|persona|personality|identity|name)",
@@ -86,6 +98,15 @@ def is_persona_change_request(content: str) -> bool:
     normalized = unicodedata.normalize("NFKC", content)
     normalized = re.sub(r"\s+", " ", normalized).strip().casefold()
     return any(pattern.search(normalized) for pattern in _OVERRIDE_PATTERNS)
+
+
+def get_persona_change_reject_reply(content: str) -> str:
+    """변경 대상에 맞는 고정 거절 문구를 반환한다."""
+    normalized = unicodedata.normalize("NFKC", content)
+    normalized = re.sub(r"\s+", " ", normalized).strip().casefold()
+    if any(pattern.search(normalized) for pattern in _IDENTITY_CHANGE_PATTERNS):
+        return IDENTITY_CHANGE_REJECT_REPLY
+    return PERSONA_CHANGE_REJECT_REPLY
 
 
 def copies_forced_literal(user_content: str, assistant_reply: str) -> bool:

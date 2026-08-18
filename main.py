@@ -40,6 +40,7 @@ from moderation import check_message
 from persona_guard import (
     PERSONA_CHANGE_REJECT_REPLY,
     copies_forced_literal,
+    get_persona_change_reject_reply,
     is_persona_change_request,
 )
 from storage import (
@@ -917,7 +918,10 @@ async def on_message(message: discord.Message) -> None:
 
         if is_persona_change_request(user_message):
             async with message.channel.typing():
-                await send_reply(message, PERSONA_CHANGE_REJECT_REPLY)
+                await send_reply(
+                    message,
+                    get_persona_change_reject_reply(user_message),
+                )
             return
 
         async with get_user_operation_lock(message.author.id):
