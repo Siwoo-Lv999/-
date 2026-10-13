@@ -37,12 +37,7 @@ from llm import (
     warm_up_model,
 )
 from moderation import check_message
-from persona_guard import (
-    PERSONA_CHANGE_REJECT_REPLY,
-    copies_forced_literal,
-    get_persona_change_reject_reply,
-    is_persona_change_request,
-)
+from system_guard import get_security_reply
 from storage import (
     ConversationStorageError,
     build_session_key,
@@ -839,8 +834,6 @@ async def process_conversation_message(
             output_moderation = check_message(model_reply)
             if output_moderation is not None:
                 _, reply = output_moderation
-            elif copies_forced_literal(user_message, model_reply):
-                reply = PERSONA_CHANGE_REJECT_REPLY
             else:
                 generated_reply = model_reply
                 reply = model_reply
@@ -916,12 +909,10 @@ async def on_message(message: discord.Message) -> None:
                 await send_reply(message, moderation_reply)
             return
 
-        if is_persona_change_request(user_message):
+        security_reply = get_security_reply(user_message)
+        if security_reply is not None:
             async with message.channel.typing():
-                await send_reply(
-                    message,
-                    get_persona_change_reject_reply(user_message),
-                )
+                await send_reply(message, security_reply)
             return
 
         async with get_user_operation_lock(message.author.id):
