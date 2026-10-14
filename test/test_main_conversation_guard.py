@@ -47,6 +47,11 @@ class BotMentionTests(unittest.TestCase):
 
 
 class MainConversationGuardTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        provider = patch.object(llm, "LLM_PROVIDER", "ollama")
+        provider.start()
+        self.addCleanup(provider.stop)
+
     async def test_generated_prompt_leak_is_not_sent_or_saved(self) -> None:
         message = make_message("안녕")
         with (

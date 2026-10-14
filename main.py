@@ -19,6 +19,8 @@ from config import (
     DISCORD_TOKEN,
     GITHUB_WEBHOOK_CHANNEL_ID,
     IGNORE_BOT_MESSAGES,
+    LLM_MODEL,
+    LLM_PROVIDER,
     OLLAMA_WARMUP_ON_START,
     USER_COOLDOWN_SECONDS,
 )
@@ -775,6 +777,7 @@ async def on_ready() -> None:
             print(f"슬래시 명령어를 동기화했습니다: {len(synced_commands)}개")
 
     print(f"Discord에 로그인했습니다: {client.user}")
+    print(f"LLM 설정: {LLM_PROVIDER} / {LLM_MODEL}")
 
     try:
         await start_github_webhook_server(client)
@@ -782,7 +785,8 @@ async def on_ready() -> None:
         print(f"GitHub Webhook 서버 시작 오류: {error}")
 
     if (
-        OLLAMA_WARMUP_ON_START
+        LLM_PROVIDER == "ollama"
+        and OLLAMA_WARMUP_ON_START
         and (ollama_warmup_task is None or ollama_warmup_task.done())
     ):
         ollama_warmup_task = asyncio.create_task(
@@ -906,16 +910,16 @@ async def process_conversation_message(
             generated_reply = model_reply
             reply = model_reply
         except LlmConnectionError as error:
-            print(f"Ollama 연결 오류: {error}")
+            print(f"LLM 연결 오류 ({LLM_PROVIDER}): {error}")
             reply = CONNECTION_ERROR_REPLY
         except LlmTimeoutError as error:
-            print(f"Ollama 시간 초과: {error}")
+            print(f"LLM 시간 초과 ({LLM_PROVIDER}): {error}")
             reply = TIMEOUT_ERROR_REPLY
         except LlmSecurityError:
             print("LLM 답변의 내부 지시 노출을 차단했습니다.")
             reply = SYSTEM_ACCESS_REJECT_REPLY
         except LlmResponseError as error:
-            print(f"Ollama 응답 오류: {error}")
+            print(f"LLM 응답 오류 ({LLM_PROVIDER}): {error}")
             reply = RESPONSE_ERROR_REPLY
         finally:
             elapsed = time.perf_counter() - llm_started_at

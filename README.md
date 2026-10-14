@@ -1,6 +1,6 @@
 # 루나 Discord 봇
 
-서버의 직접 멘션과 DM을 감지하고, 대화 맥락을 기억해 로컬 Ollama 모델로 답변하는 Discord 봇입니다.
+서버의 직접 멘션과 DM을 감지하고, 대화 맥락을 기억해 로컬 Ollama 모델 또는 OpenAI API로 답변하는 Discord 봇입니다.
 
 ## 1. 가상환경과 패키지
 
@@ -21,10 +21,16 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-`.env`에 Discord 토큰과 Ollama 설정을 작성합니다.
+`.env`에 Discord 토큰과 LLM 설정을 작성합니다. 기존 `.env`가 있다면 파일을 덮어쓰지 말고 필요한 항목만 추가합니다.
 
 ```env
 DISCORD_TOKEN=여기에_새로_발급한_봇_토큰
+LLM_PROVIDER=auto
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-6-luna
+OPENAI_TIMEOUT_SECONDS=60
+OPENAI_MAX_OUTPUT_TOKENS=256
+OPENAI_REASONING_EFFORT=none
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=gemma3:4b
 OLLAMA_TIMEOUT_SECONDS=60
@@ -45,8 +51,14 @@ GITHUB_WEBHOOK_HOST=127.0.0.1
 GITHUB_WEBHOOK_PORT=8080
 ```
 
-실제 토큰은 `.env.example`에 넣거나 Git에 커밋하지 마세요.
+실제 Discord 토큰과 OpenAI API 키는 `.env.example`에 넣거나 Git에 커밋하지 마세요.
 
+- `LLM_PROVIDER`: 기본값 `auto`는 `OPENAI_API_KEY`가 있으면 OpenAI, 없으면 Ollama를 선택합니다. `ollama` 또는 `openai`로 고정할 수도 있습니다.
+- `OPENAI_API_KEY`: OpenAI API 키입니다. 기본 `auto` 모드에서는 이 키만 추가하면 OpenAI로 전환됩니다.
+- `OPENAI_MODEL`: 기본값은 `gpt-6-luna`입니다. 계정에서 사용 가능한 다른 API 모델로 바꿀 수 있습니다.
+- `OPENAI_TIMEOUT_SECONDS`: OpenAI 요청 제한 시간입니다. 기본값은 60초입니다.
+- `OPENAI_MAX_OUTPUT_TOKENS`: 응답에 사용하는 출력·추론 토큰 상한입니다. 기본값은 256입니다. 토큰 상한으로 생성이 끝나지 않으면 잘린 답변을 보내거나 저장하지 않고 오류로 처리합니다.
+- `OPENAI_REASONING_EFFORT`: 기본값 `none`은 GPT-6 Luna의 추론을 끄고 짧은 대화 응답에 사용합니다. 모델에 따라 지원하는 값이 다릅니다. 추론을 켜면 출력 토큰 상한도 늘리는 것이 좋습니다. 추론 설정을 지원하지 않는 모델에서는 값을 비워 해당 매개변수를 생략합니다.
 - `USER_COOLDOWN_SECONDS`: 사용자별 요청 간격입니다.
 - `OLLAMA_NUM_CTX`: Ollama 문맥 크기입니다. 기본값은 응답 속도를 고려해 `2048`입니다.
 - `OLLAMA_KEEP_ALIVE`: 모델을 메모리에 유지할 시간입니다. `-1`은 봇이 실행되는 동안 계속 유지합니다.
@@ -61,7 +73,11 @@ GITHUB_WEBHOOK_PORT=8080
 - `GITHUB_WEBHOOK_BRANCHES_PATH`: 저장소별 허용 브랜치 설정 파일 경로입니다.
 - `GITHUB_WEBHOOK_HOST`, `GITHUB_WEBHOOK_PORT`: 로컬 Webhook 수신 주소입니다.
 
-## 3. Ollama 준비
+## 3. LLM 준비
+
+### Ollama 사용
+
+API 키가 없거나 `LLM_PROVIDER=ollama`이면 기존 로컬 모델을 사용합니다.
 
 1. [Ollama 공식 사이트](https://ollama.com/download/windows)에서 Windows용 Ollama를 설치합니다.
 2. 새 PowerShell을 열고 모델을 내려받습니다.
@@ -76,6 +92,28 @@ Ollama는 설치 후 일반적으로 백그라운드에서 실행됩니다. 연�
 ```powershell
 ollama serve
 ```
+
+### OpenAI API 사용
+
+1. [OpenAI Platform](https://platform.openai.com/)에서 API 결제를 설정하고 [API 키](https://platform.openai.com/api-keys)를 발급합니다. ChatGPT 구독과 API 요금은 별도입니다.
+2. **봇을 실행하는 서버**의 기존 `.env`에 다음 항목을 추가하거나 수정합니다.
+
+```env
+LLM_PROVIDER=auto
+OPENAI_API_KEY=여기에_발급한_API_키
+```
+
+3. 봇을 재시작합니다. 터미널에 `LLM 설정: openai / gpt-6-luna`가 표시되면 OpenAI가 선택된 것입니다. Discord에서 멘션하거나 DM을 보내 실제 응답을 확인합니다.
+
+추가 패키지 설치 없이 기존 `aiohttp`로 공식 Responses API를 호출합니다. 서버의 VRAM 용량과 관계없이 사용할 수 있으며, 서버에서 `api.openai.com`으로 HTTPS 접속이 가능해야 합니다. Tailscale로 서버를 관리하는 상태에서도 사용할 수 있습니다.
+
+OpenAI 사용 중에는 Ollama 연결이나 모델 예열을 실행하지 않습니다. API 오류가 발생해도 다른 제공자로 자동 전환하지 않으며, 기존 오류 안내를 보냅니다. 키·잔액·모델 접근 권한 오류의 안내는 서버 터미널에서 확인할 수 있습니다. API 키와 OpenAI 오류 응답 본문은 로그에 기록하지 않습니다.
+
+OpenAI에는 답변에 필요한 캐릭터 지침, 예시 대화, 최근 대화와 현재 메시지를 전달합니다. 대화 기억과 초기화는 기존 로컬 데이터베이스에서 관리하고, API에는 `store=false`로 요청합니다. 이 설정이 OpenAI의 모든 데이터 보관을 없애는 것은 아닙니다. [데이터 처리 안내](https://developers.openai.com/api/docs/guides/your-data)를 참고하세요.
+
+일주일 뒤 Ollama로 돌아가려면 API 키와 Ollama 설정을 그대로 둔 채 `LLM_PROVIDER=ollama`로 바꾸고 봇을 재시작합니다. 다시 API를 사용하려면 `auto` 또는 `openai`로 바꾸면 됩니다.
+
+기본 모델·요청 설정은 [GPT-6 Luna 모델 안내](https://developers.openai.com/api/docs/models/gpt-6-luna)와 [OpenAI 공식 시작 가이드](https://developers.openai.com/api/docs/quickstart)를 기준으로 합니다. 모델에 따라 사용 가능 여부와 과금이 달라집니다.
 
 ## 4. Discord Developer Portal
 
@@ -142,9 +180,9 @@ Linux에서는 다음과 같이 실행합니다.
 ## 8. 요청 처리와 안전 설정
 
 - 사용자별 2초 쿨다운을 적용합니다.
-- Ollama 요청은 동시에 하나만 실행하고 나머지는 대기합니다.
-- 봇 시작 시 Ollama 모델을 예열하고 `OLLAMA_KEEP_ALIVE` 설정에 따라 메모리에 유지합니다.
-- Gemma 기본 시스템 프롬프트는 존댓말, 이성적·논리적인 답변, 일반 답변 최대 3문장을 지시합니다. 생성은 최대 96토큰으로 제한하고 최근 대화 문맥과 예시 수를 작게 유지합니다.
+- LLM 요청은 제공자와 관계없이 동시에 하나만 실행하고 나머지는 대기합니다.
+- Ollama 사용 시 봇 시작에 모델을 예열하고 `OLLAMA_KEEP_ALIVE` 설정에 따라 메모리에 유지합니다. OpenAI 사용 시에는 예열하지 않습니다.
+- 두 제공자 모두 같은 캐릭터 프롬프트, 예시 대화, 최근 대화와 답변 검사를 사용합니다. 기본 시스템 프롬프트는 존댓말, 이성적·논리적인 답변, 일반 답변 최대 3문장을 지시합니다. Ollama 생성은 최대 96토큰, OpenAI 생성은 기본 최대 256토큰으로 제한합니다.
 - 터미널에는 메시지 원문 없이 LLM 응답 처리 시간만 기록합니다.
 - 답변을 기다리는 동안 Discord의 입력 중 표시를 사용합니다.
 - 일반 콘텐츠를 단어·주제에 따라 거절하던 입력·출력 필터와 설정 파일은 제거했습니다. 이전 MODERATION_CONFIG_PATH 환경 변수는 더 이상 사용하지 않습니다.

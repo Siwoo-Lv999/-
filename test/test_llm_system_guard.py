@@ -15,6 +15,11 @@ from system_guard import (
 
 
 class LlmSystemGuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        provider = patch.object(llm, "LLM_PROVIDER", "ollama")
+        provider.start()
+        self.addCleanup(provider.stop)
+
     def test_repairs_creator_alias_split_from_screenshot(self) -> None:
         bad_reply = (
             "안녕하세요, 저는 루나입니다. 제작자는 루멘(Lumen)과 박시우입니다. "

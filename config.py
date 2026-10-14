@@ -44,15 +44,74 @@ def read_optional_int_environment(name: str) -> int | None:
         raise RuntimeError(f"{name}은 정수여야 합니다.") from error
 
 
+def read_positive_int_environment(
+    name: str, default: int, minimum: int = 1
+) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError as error:
+        raise RuntimeError(f"{name}은 정수여야 합니다.") from error
+    if value < minimum:
+        raise RuntimeError(f"{name}은 {minimum} 이상의 정수여야 합니다.")
+    return value
+
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower()
+if LLM_PROVIDER not in {"auto", "ollama", "openai"}:
+    raise RuntimeError("LLM_PROVIDER는 auto, ollama 또는 openai여야 합니다.")
+if LLM_PROVIDER == "auto":
+    LLM_PROVIDER = "openai" if OPENAI_API_KEY else "ollama"
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna").strip()
+OPENAI_REASONING_EFFORT = os.getenv(
+    "OPENAI_REASONING_EFFORT", "none"
+).strip().lower()
+OPENAI_TIMEOUT_SECONDS = 60
+OPENAI_MAX_OUTPUT_TOKENS = 256
 OLLAMA_BASE_URL = os.getenv(
     "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
 ).rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b").strip()
-OLLAMA_KEEP_ALIVE = read_keep_alive_environment()
-OLLAMA_WARMUP_ON_START = read_bool_environment(
-    "OLLAMA_WARMUP_ON_START", True
-)
+OLLAMA_KEEP_ALIVE: int | str = -1
+OLLAMA_WARMUP_ON_START = False
+OLLAMA_TIMEOUT_SECONDS = 60
+OLLAMA_NUM_CTX = 2048
+
+# 선택한 제공자의 설정만 검사한다. 다른 제공자의 설정은 복귀용으로 남겨 둔다.
+if LLM_PROVIDER == "openai":
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OpenAI를 사용하려면 .env에 OPENAI_API_KEY가 필요합니다.")
+    if not OPENAI_MODEL:
+        raise RuntimeError("OPENAI_MODEL은 비어 있을 수 없습니다.")
+    if OPENAI_REASONING_EFFORT not in {
+        "", "none", "low", "medium", "high", "xhigh", "max"
+    }:
+        raise RuntimeError(
+            "OPENAI_REASONING_EFFORT는 비우거나 none, low, medium, high, xhigh, max여야 합니다."
+        )
+    OPENAI_TIMEOUT_SECONDS = read_positive_int_environment(
+        "OPENAI_TIMEOUT_SECONDS", 60
+    )
+    OPENAI_MAX_OUTPUT_TOKENS = read_positive_int_environment(
+        "OPENAI_MAX_OUTPUT_TOKENS", 256
+    )
+else:
+    if not OLLAMA_MODEL:
+        raise RuntimeError("OLLAMA_MODEL이 설정되지 않았습니다. .env 파일을 확인해 주세요.")
+    OLLAMA_KEEP_ALIVE = read_keep_alive_environment()
+    OLLAMA_WARMUP_ON_START = read_bool_environment(
+        "OLLAMA_WARMUP_ON_START", True
+    )
+    OLLAMA_TIMEOUT_SECONDS = read_positive_int_environment(
+        "OLLAMA_TIMEOUT_SECONDS", 60
+    )
+    OLLAMA_NUM_CTX = read_positive_int_environment(
+        "OLLAMA_NUM_CTX", 2048, minimum=2048
+    )
+
+LLM_MODEL = OPENAI_MODEL if LLM_PROVIDER == "openai" else OLLAMA_MODEL
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "data/bot.db"))
 if not DATABASE_PATH.is_absolute():
     DATABASE_PATH = PROJECT_ROOT / DATABASE_PATH
@@ -96,14 +155,6 @@ if not GITHUB_WEBHOOK_BRANCHES_PATH.is_absolute():
     )
 
 try:
-    OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))
-except ValueError as error:
-    raise RuntimeError("OLLAMA_TIMEOUT_SECONDS는 정수여야 합니다.") from error
-try:
-    OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "2048"))
-except ValueError as error:
-    raise RuntimeError("OLLAMA_NUM_CTX는 정수여야 합니다.") from error
-try:
     USER_COOLDOWN_SECONDS = float(os.getenv("USER_COOLDOWN_SECONDS", "2"))
 except ValueError as error:
     raise RuntimeError("USER_COOLDOWN_SECONDS는 숫자여야 합니다.") from error
@@ -120,15 +171,6 @@ except ValueError as error:
 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN이 설정되지 않았습니다. .env 파일을 확인해 주세요.")
-
-if not OLLAMA_MODEL:
-    raise RuntimeError("OLLAMA_MODEL이 설정되지 않았습니다. .env 파일을 확인해 주세요.")
-
-if OLLAMA_TIMEOUT_SECONDS <= 0:
-    raise RuntimeError("OLLAMA_TIMEOUT_SECONDS는 1 이상의 정수여야 합니다.")
-
-if OLLAMA_NUM_CTX < 2048:
-    raise RuntimeError("OLLAMA_NUM_CTX는 2048 이상의 정수여야 합니다.")
 
 if USER_COOLDOWN_SECONDS < 0:
     raise RuntimeError("USER_COOLDOWN_SECONDS는 0 이상의 숫자여야 합니다.")

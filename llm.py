@@ -7,12 +7,18 @@ from pathlib import Path
 import aiohttp
 
 from config import (
+    LLM_PROVIDER,
     MAX_CONCURRENT_LLM_REQUESTS,
     OLLAMA_BASE_URL,
     OLLAMA_KEEP_ALIVE,
     OLLAMA_MODEL,
     OLLAMA_NUM_CTX,
     OLLAMA_TIMEOUT_SECONDS,
+    OPENAI_API_KEY,
+    OPENAI_MAX_OUTPUT_TOKENS,
+    OPENAI_MODEL,
+    OPENAI_REASONING_EFFORT,
+    OPENAI_TIMEOUT_SECONDS,
 )
 from system_guard import (
     SYSTEM_SECURITY_INVARIANT,
@@ -301,7 +307,120 @@ async def _request_ollama(payload: dict[str, object]) -> str:
     return content
 
 
+async def _post_openai(payload: dict[str, object]) -> dict[str, object]:
+    timeout = aiohttp.ClientTimeout(total=OPENAI_TIMEOUT_SECONDS)
+    try:
+        async with _llm_request_semaphore:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    "https://api.openai.com/v1/responses",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    allow_redirects=False,
+                ) as response:
+                    if response.status != 200:
+                        # 서버 오류 본문에는 키나 대화가 포함될 수 있어 기록하지 않는다.
+                        hints = {
+                            400: "모델과 OPENAI_REASONING_EFFORT 등 요청 설정을 확인해 주세요.",
+                            401: "OPENAI_API_KEY가 올바른지 확인해 주세요.",
+                            403: "API 키의 권한과 모델 접근 권한을 확인해 주세요.",
+                            404: "OPENAI_MODEL과 해당 모델의 접근 권한을 확인해 주세요.",
+                            429: "API 잔액, 사용 한도 또는 요청 속도 제한을 확인해 주세요.",
+                        }
+                        hint = hints.get(
+                            response.status, "잠시 뒤에 다시 시도해 주세요."
+                        )
+                        raise LlmResponseError(
+                            f"OpenAI API 오류 ({response.status}): {hint}"
+                        )
+                    try:
+                        data = await response.json()
+                    except (ValueError, aiohttp.ContentTypeError) as error:
+                        raise LlmResponseError(
+                            "OpenAI가 올바르지 않은 JSON 응답을 반환했습니다."
+                        ) from error
+    except TimeoutError as error:
+        raise LlmTimeoutError("OpenAI 응답 시간이 초과되었습니다.") from error
+    except aiohttp.ClientError as error:
+        raise LlmConnectionError("OpenAI에 연결할 수 없습니다.") from error
+
+    if not isinstance(data, dict):
+        raise LlmResponseError("OpenAI가 올바르지 않은 응답을 반환했습니다.")
+    return data
+
+
+async def _request_openai(messages: list[dict[str, str]]) -> str:
+    payload: dict[str, object] = {
+        "model": OPENAI_MODEL,
+        "instructions": messages[0]["content"],
+        "input": messages[1:],
+        "max_output_tokens": OPENAI_MAX_OUTPUT_TOKENS,
+        "store": False,
+    }
+    if OPENAI_REASONING_EFFORT:
+        payload["reasoning"] = {"effort": OPENAI_REASONING_EFFORT}
+    data = await _post_openai(payload)
+    if data.get("status") == "incomplete":
+        raise LlmResponseError(
+            "OpenAI 응답이 완료되지 않았습니다. "
+            "OPENAI_MAX_OUTPUT_TOKENS와 모델 설정을 확인해 주세요."
+        )
+    if data.get("status") != "completed" or data.get("error"):
+        raise LlmResponseError("OpenAI가 응답 생성을 완료하지 못했습니다.")
+
+    output = data.get("output")
+    if not isinstance(output, list):
+        raise LlmResponseError("OpenAI 응답 형식이 올바르지 않습니다.")
+    parts: list[str] = []
+    for item in output:
+        if (
+            not isinstance(item, dict)
+            or item.get("type") != "message"
+            or item.get("role") != "assistant"
+        ):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "output_text":
+                text = part.get("text")
+            elif part.get("type") == "refusal":
+                text = part.get("refusal")
+            else:
+                continue
+            if isinstance(text, str):
+                parts.append(text)
+    reply = "\n".join(parts).strip()
+    if not reply:
+        raise LlmResponseError("OpenAI가 빈 응답을 반환했습니다.")
+    return reply
+
+
+async def _request_model(messages: list[dict[str, str]]) -> str:
+    if LLM_PROVIDER == "openai":
+        return await _request_openai(messages)
+    return await _request_ollama(
+        {
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "options": {
+                "num_ctx": OLLAMA_NUM_CTX,
+                "num_predict": 96,
+                "temperature": 0.1,
+                "repeat_penalty": 1.15,
+            },
+        }
+    )
+
+
 async def warm_up_model() -> None:
+    if LLM_PROVIDER != "ollama":
+        return
     await _post_ollama(
         "/api/generate",
         {
@@ -360,23 +479,12 @@ async def generate_reply(
     messages.append({"role": "user", "content": user_message})
     # 시스템 규칙은 첫 메시지에만 둔다. 실제 사용자 요청이 항상 마지막 턴이다.
 
-    payload = {
-        "model": OLLAMA_MODEL,
-        "messages": messages,
-        "stream": False,
-        "keep_alive": OLLAMA_KEEP_ALIVE,
-        "options": {
-            "num_ctx": OLLAMA_NUM_CTX,
-            "num_predict": 96,
-            "temperature": 0.1,
-            "repeat_penalty": 1.15,
-        },
-    }
+    request_messages = messages
     creator_identity_failed = False
     for attempt in range(2):
-        normalized_reply = normalize_reply(await _request_ollama(payload))
+        normalized_reply = normalize_reply(await _request_model(request_messages))
         if not normalized_reply:
-            raise LlmResponseError("Ollama 응답이 정규화 후 비어 있습니다.")
+            raise LlmResponseError("LLM 응답이 정규화 후 비어 있습니다.")
         if (
             leaks_internal_instructions(normalized_reply)
             or contains_model_control_token(normalized_reply)
@@ -394,11 +502,8 @@ async def generate_reply(
                 repair_instructions.append(CREATOR_IDENTITY_REPAIR_INSTRUCTION)
             if casual_tone:
                 repair_instructions.append(TONE_REPAIR_INSTRUCTION)
-            payload = {
-                **payload,
-                "messages": [dict(message) for message in messages],
-            }
-            payload["messages"][0]["content"] += "\n" + "\n".join(repair_instructions)
+            request_messages = [dict(message) for message in messages]
+            request_messages[0]["content"] += "\n" + "\n".join(repair_instructions)
     if creator_identity_failed:
         return CREATOR_IDENTITY_REPLY
     return TONE_FALLBACK_REPLY
