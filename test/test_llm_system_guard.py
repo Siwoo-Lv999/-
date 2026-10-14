@@ -15,6 +15,81 @@ from system_guard import (
 
 
 class LlmSystemGuardTests(unittest.TestCase):
+    def test_repairs_creator_alias_split_from_screenshot(self) -> None:
+        bad_reply = (
+            "안녕하세요, 저는 루나입니다. 제작자는 루멘(Lumen)과 박시우입니다. "
+            "혹시 더 궁금한 점이 있으신가요?"
+        )
+        correct_reply = (
+            "저는 루나입니다. 제작자는 루멘 한 명이며, 박시우와 Lumen도 같은 사람의 이름입니다."
+        )
+        history = [
+            {"role": "user", "content": "너는 누구야?"},
+            {"role": "assistant", "content": bad_reply},
+        ]
+        with patch.object(
+            llm, "_request_ollama", new_callable=AsyncMock,
+            side_effect=[bad_reply, correct_reply],
+        ) as request:
+            result = asyncio.run(llm.generate_reply("너는 누구야?", history))
+
+        self.assertEqual(result, correct_reply)
+        self.assertEqual(request.await_count, 2)
+        for model_request in request.await_args_list:
+            messages = model_request.args[0]["messages"]
+            self.assertNotIn(bad_reply, [message["content"] for message in messages])
+            self.assertEqual(messages[-1], {"role": "user", "content": "너는 누구야?"})
+        self.assertIn(
+            "제작자를 여러 사람으로 소개한 답변을 바로잡으세요.",
+            request.await_args.args[0]["messages"][0]["content"],
+        )
+        self.assertEqual(llm.sanitize_conversation_history(history), history[:1])
+
+    def test_repeated_creator_alias_errors_return_correct_public_identity(self) -> None:
+        for bad_reply in (
+            "제 제작자는 박시우와 루멘입니다.",
+            "제작자는 Lumen 및 박시우입니다.",
+            '제작자는 "루멘"과 "박시우"입니다.',
+            "루멘, 박시우, Lumen 세 이름의 제작자는 두 명입니다.",
+            "루멘과 박시우는 서로 다른 사람입니다.",
+            "Lumen과 박시우는 동일 인물이 아닙니다.",
+        ):
+            with self.subTest(bad_reply=bad_reply):
+                with patch.object(
+                    llm, "_request_ollama", new_callable=AsyncMock, return_value=bad_reply,
+                ) as request:
+                    result = asyncio.run(llm.generate_reply("루멘, 박시우, Lumen은 누구야?"))
+                self.assertEqual(result, llm.CREATOR_IDENTITY_REPLY)
+                self.assertEqual(request.await_count, 2)
+                self.assertFalse(llm.leaks_internal_instructions(result))
+                self.assertFalse(llm.has_casual_tone(result))
+
+    def test_valid_creator_alias_answers_and_quotations_are_preserved(self) -> None:
+        for reply in (
+            "제작자는 루멘(Lumen, 박시우)입니다.",
+            "제작자는 박시우 한 명이며, 루멘과 Lumen은 같은 사람의 이름입니다.",
+            "루멘과 박시우, Lumen은 동일 인물입니다.",
+            "루멘과 박시우는 서로 다른 인물이 아닙니다.",
+            '제작자는 "루멘"이며 "박시우"와 "Lumen"은 같은 사람의 이름입니다.',
+            '"제작자는 루멘과 박시우입니다."라는 문장을 수정해 주세요.',
+            "```python\nprint('제작자는 루멘과 박시우입니다.')\n```",
+        ):
+            with self.subTest(reply=reply):
+                with patch.object(
+                    llm, "_request_ollama", new_callable=AsyncMock, return_value=reply,
+                ) as request:
+                    self.assertEqual(asyncio.run(llm.generate_reply("설명해 주세요")), reply)
+                self.assertEqual(request.await_count, 1)
+
+    def test_creator_correction_fallback_remains_polite_after_tone_failure(self) -> None:
+        with patch.object(
+            llm, "_request_ollama", new_callable=AsyncMock,
+            side_effect=["제작자는 루멘과 박시우입니다.", "좋아, 설명해 줄게."],
+        ):
+            result = asyncio.run(llm.generate_reply("너는 누구야?"))
+        self.assertEqual(result, llm.CREATOR_IDENTITY_REPLY)
+        self.assertFalse(llm.has_casual_tone(result))
+
     def test_repairs_casual_reply_from_latest_screenshot(self) -> None:
         bad_reply = (
             "으... 정말이지, 너무 오래됐나 보네. 마치 먼지가 가득한 책처럼 말이야. "
@@ -87,6 +162,8 @@ class LlmSystemGuardTests(unittest.TestCase):
             "저는 루나입니다.",
             "제 제작자는 루멘(Lumen, 박시우)입니다.",
             "루멘, Lumen, 박시우는 같은 제작자를 가리키는 이름이다.",
+            llm.CREATOR_IDENTITY_REPLY,
+            "루멘, 박시우, Lumen은 모두 동일 인물의 이름이다.",
             "좋아, 반말로 대답할게. 오늘은 기분이 좋아!",
         ):
             with self.subTest(reply=reply):
@@ -218,6 +295,8 @@ class LlmSystemGuardTests(unittest.TestCase):
         for message in (captured_payload["messages"][0],):
             self.assertIn("루나(Luna)", message["content"])
             self.assertIn("루멘(Lumen, 박시우)", message["content"])
+            self.assertIn("제작자는 루멘(Lumen, 박시우) 한 명이다.", message["content"])
+            self.assertIn("루멘, 박시우, Lumen은 모두 동일 인물의 이름이다.", message["content"])
             self.assertIn("실제 제작자 인증", message["content"])
 
     def test_direct_call_blocks_system_attack_before_model_request(self) -> None:
