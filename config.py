@@ -56,11 +56,6 @@ OLLAMA_WARMUP_ON_START = read_bool_environment(
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "data/bot.db"))
 if not DATABASE_PATH.is_absolute():
     DATABASE_PATH = PROJECT_ROOT / DATABASE_PATH
-MODERATION_CONFIG_PATH = Path(
-    os.getenv("MODERATION_CONFIG_PATH", "config/moderation.yml")
-)
-if not MODERATION_CONFIG_PATH.is_absolute():
-    MODERATION_CONFIG_PATH = PROJECT_ROOT / MODERATION_CONFIG_PATH
 AUTO_ROLES_PATH = Path(
     os.getenv("AUTO_ROLES_PATH", "config/auto_roles.yml")
 )

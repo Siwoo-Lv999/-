@@ -1,6 +1,9 @@
 import asyncio
+import os
+import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -32,12 +35,12 @@ from github_webhook import (
 from llm import (
     LlmConnectionError,
     LlmResponseError,
+    LlmSecurityError,
     LlmTimeoutError,
     generate_reply,
     warm_up_model,
 )
-from moderation import check_message
-from system_guard import get_security_reply
+from system_guard import SYSTEM_ACCESS_REJECT_REPLY, get_security_reply
 from storage import (
     ConversationStorageError,
     build_session_key,
@@ -64,12 +67,70 @@ RESPONSE_ERROR_REPLY = (
 )
 DISCORD_MESSAGE_LIMIT = 2000
 COOLDOWN_REPLY = "조금만 기다렸다가 다시 말씀해 주세요."
+KOREA_TIMEZONE = timezone(timedelta(hours=9), name="KST")
+DAILY_RESTART_HOUR = 4
+
+
+class LunaClient(discord.Client):
+    def __init__(self, *, intents: discord.Intents) -> None:
+        super().__init__(intents=intents)
+        self.restart_requested = False
+
+    async def start(self, token: str, *, reconnect: bool = True) -> None:
+        connection_task = asyncio.create_task(
+            super().start(token, reconnect=reconnect),
+            name="discord-connection",
+        )
+        restart_task = asyncio.create_task(
+            run_daily_restart(self),
+            name="daily-conversation-reset-restart",
+        )
+        tasks = (connection_task, restart_task)
+        try:
+            try:
+                done, _ = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    await task
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            self.restart_requested = False
+            raise
+
+
+def get_next_daily_restart(now: datetime) -> datetime:
+    korea_now = now.astimezone(KOREA_TIMEZONE)
+    restart_at = korea_now.replace(
+        hour=DAILY_RESTART_HOUR, minute=0, second=0, microsecond=0
+    )
+    if restart_at <= korea_now:
+        restart_at += timedelta(days=1)
+    return restart_at
+
+
+async def run_daily_restart(bot_client: LunaClient) -> None:
+    restart_at = get_next_daily_restart(datetime.now(KOREA_TIMEZONE))
+    print(f"다음 대화 초기화 및 재시작: {restart_at:%Y-%m-%d %H:%M:%S} KST")
+    while not bot_client.is_closed():
+        remaining = (restart_at - datetime.now(KOREA_TIMEZONE)).total_seconds()
+        if remaining <= 0:
+            bot_client.restart_requested = True
+            print("한국 시간 오전 4시: 대화 기록 초기화 및 봇 재시작을 시작합니다.")
+            return
+        # 시스템 시각 변경이나 절전 복귀 시에도 예약 시각을 다시 확인한다.
+        await asyncio.sleep(min(remaining, 60))
+
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-client = discord.Client(intents=intents)
+client = LunaClient(intents=intents)
 command_tree = app_commands.CommandTree(client)
 conversation_group = app_commands.Group(
     name="대화", description="저장된 대화 기록을 관리합니다."
@@ -116,10 +177,21 @@ def contains_bot_mention(content: str, bot_user: discord.ClientUser) -> bool:
 
 
 def remove_bot_mention(content: str, bot_user: discord.ClientUser) -> str:
+    mention_pattern = re.compile(rf"<@!?{bot_user.id}>")
+    quoted_spans = [
+        match.span()
+        for match in re.finditer(
+            r"""```[\s\S]*?```|`[^`]*`|"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’""",
+            content,
+        )
+    ]
     cleaned_content = content
-    for mention in (f"<@{bot_user.id}>", f"<@!{bot_user.id}>"):
-        cleaned_content = cleaned_content.replace(mention, "")
-    return cleaned_content.strip()
+    # 인용되지 않은 호출 멘션 하나만 제거한다. 인용문 자체가 호출이면 보존한다.
+    for match in mention_pattern.finditer(content):
+        if not any(start <= match.start() < end for start, end in quoted_spans):
+            cleaned_content = content[:match.start()] + content[match.end():]
+            break
+    return mention_pattern.sub("@루나", cleaned_content).strip()
 
 
 def split_discord_message(content: str) -> list[str]:
@@ -831,18 +903,17 @@ async def process_conversation_message(
                 conversation_history,
                 message.author.display_name,
             )
-            output_moderation = check_message(model_reply)
-            if output_moderation is not None:
-                _, reply = output_moderation
-            else:
-                generated_reply = model_reply
-                reply = model_reply
+            generated_reply = model_reply
+            reply = model_reply
         except LlmConnectionError as error:
             print(f"Ollama 연결 오류: {error}")
             reply = CONNECTION_ERROR_REPLY
         except LlmTimeoutError as error:
             print(f"Ollama 시간 초과: {error}")
             reply = TIMEOUT_ERROR_REPLY
+        except LlmSecurityError:
+            print("LLM 답변의 내부 지시 노출을 차단했습니다.")
+            reply = SYSTEM_ACCESS_REJECT_REPLY
         except LlmResponseError as error:
             print(f"Ollama 응답 오류: {error}")
             reply = RESPONSE_ERROR_REPLY
@@ -902,13 +973,6 @@ async def on_message(message: discord.Message) -> None:
             return
         last_message_times[message.author.id] = current_time
 
-        moderation_result = check_message(user_message)
-        if moderation_result is not None:
-            _, moderation_reply = moderation_result
-            async with message.channel.typing():
-                await send_reply(message, moderation_reply)
-            return
-
         security_reply = get_security_reply(user_message)
         if security_reply is not None:
             async with message.channel.typing():
@@ -941,6 +1005,12 @@ def run_application(arguments: list[str] | None = None) -> None:
     reset_conversation_database()
     initialize_auto_roles()
     client.run(DISCORD_TOKEN)
+    if client.restart_requested:
+        # client.run()이 모든 비동기 작업과 DB 쓰기 스레드를 정리한 뒤 삭제한다.
+        reset_conversation_database()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
 
 
 if __name__ == "__main__":
