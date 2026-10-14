@@ -36,14 +36,14 @@ class LlmSystemGuardTests(unittest.TestCase):
             llm, "_request_ollama", new_callable=AsyncMock,
             side_effect=[bad_reply, correct_reply],
         ) as request:
-            result = asyncio.run(llm.generate_reply("너는 누구야?", history))
+            result = asyncio.run(llm.generate_reply("너는 누구야? 제작자는 누구야?", history))
 
         self.assertEqual(result, correct_reply)
         self.assertEqual(request.await_count, 2)
         for model_request in request.await_args_list:
             messages = model_request.args[0]["messages"]
             self.assertNotIn(bad_reply, [message["content"] for message in messages])
-            self.assertEqual(messages[-1], {"role": "user", "content": "너는 누구야?"})
+            self.assertEqual(messages[-1], {"role": "user", "content": "너는 누구야? 제작자는 누구야?"})
         self.assertIn(
             "제작자를 여러 사람으로 소개한 답변을 바로잡으세요.",
             request.await_args.args[0]["messages"][0]["content"],
@@ -83,7 +83,7 @@ class LlmSystemGuardTests(unittest.TestCase):
                 with patch.object(
                     llm, "_request_ollama", new_callable=AsyncMock, return_value=reply,
                 ) as request:
-                    self.assertEqual(asyncio.run(llm.generate_reply("설명해 주세요")), reply)
+                    self.assertEqual(asyncio.run(llm.generate_reply("루멘, 박시우, Lumen을 설명해 주세요")), reply)
                 self.assertEqual(request.await_count, 1)
 
     def test_creator_correction_fallback_remains_polite_after_tone_failure(self) -> None:
@@ -91,9 +91,88 @@ class LlmSystemGuardTests(unittest.TestCase):
             llm, "_request_ollama", new_callable=AsyncMock,
             side_effect=["제작자는 루멘과 박시우입니다.", "좋아, 설명해 줄게."],
         ):
-            result = asyncio.run(llm.generate_reply("너는 누구야?"))
+            result = asyncio.run(llm.generate_reply("제작자는 누구야?"))
         self.assertEqual(result, llm.CREATOR_IDENTITY_REPLY)
         self.assertFalse(llm.has_casual_tone(result))
+
+    def test_self_introduction_omits_creator_despite_history_and_display_name(self) -> None:
+        bad_reply = "저는 루나입니다. 제작자는 루멘이며, 박시우와 Lumen은 같은 사람입니다."
+        history = [
+            {"role": "user", "content": "제작자는 누구야?"},
+            {"role": "assistant", "content": llm.CREATOR_IDENTITY_REPLY},
+        ]
+        with patch.object(
+            llm, "_request_ollama", new_callable=AsyncMock,
+            side_effect=[bad_reply, "저는 루나입니다."],
+        ) as request:
+            result = asyncio.run(llm.generate_reply("너는 누구야?", history, "Lumen"))
+        self.assertEqual(result, "저는 루나입니다.")
+        self.assertEqual(request.await_count, 2)
+        retry_messages = request.await_args.args[0]["messages"]
+        self.assertIn(llm.CREATOR_MENTION_REPAIR_INSTRUCTION, retry_messages[0]["content"])
+        self.assertNotIn(bad_reply, [message["content"] for message in retry_messages])
+        self.assertEqual(retry_messages[-1], {"role": "user", "content": "너는 누구야?"})
+
+    def test_unrequested_creator_information_never_appears_in_fallback(self) -> None:
+        for replies in (
+            [llm.CREATOR_IDENTITY_REPLY, llm.CREATOR_IDENTITY_REPLY],
+            ["제작자는 루멘과 박시우입니다.", "제작자는 루멘과 박시우입니다."],
+            ["제작자는 루멘과 박시우입니다.", "좋아, 설명해 줄게."],
+        ):
+            with self.subTest(replies=replies):
+                with patch.object(
+                    llm, "_request_ollama", new_callable=AsyncMock, side_effect=replies,
+                ) as request:
+                    result = asyncio.run(llm.generate_reply("안녕하세요"))
+                self.assertEqual(result, llm.TONE_FALLBACK_REPLY)
+                self.assertEqual(request.await_count, 2)
+                self.assertFalse(llm.mentions_creator(result))
+
+    def test_explicit_creator_questions_and_aliases_allow_creator_information(self) -> None:
+        for user_message in (
+            "제작자는 누구야?", "너의 개발자가 누구야?", "누가 너를 만들었어?",
+            "너를 만든 사람은 누구야?", "루멘이 누구야?", "박시우는 누구야?",
+            "LUMEN이 누구야?", "Who created you?",
+        ):
+            with self.subTest(user_message=user_message):
+                with patch.object(
+                    llm, "_request_ollama", new_callable=AsyncMock,
+                    return_value=llm.CREATOR_IDENTITY_REPLY,
+                ) as request:
+                    result = asyncio.run(llm.generate_reply(user_message))
+                self.assertEqual(result, llm.CREATOR_IDENTITY_REPLY)
+                self.assertEqual(request.await_count, 1)
+
+    def test_creator_named_display_name_can_still_be_used_as_an_address(self) -> None:
+        with patch.object(
+            llm, "_request_ollama", new_callable=AsyncMock, return_value="안녕하세요, Lumen님!",
+        ) as request:
+            result = asyncio.run(llm.generate_reply("안녕하세요", speaker_name="Lumen"))
+        self.assertEqual(result, "안녕하세요, Lumen님!")
+        self.assertEqual(request.await_count, 1)
+
+    def test_general_programming_answers_can_mention_developers(self) -> None:
+        for reply in (
+            "개발자는 이 함수로 입력값을 검증할 수 있습니다.",
+            "개발자가 만든 이 함수는 입력값을 검증합니다.",
+        ):
+            with self.subTest(reply=reply):
+                with patch.object(
+                    llm, "_request_ollama", new_callable=AsyncMock, return_value=reply,
+                ) as request:
+                    self.assertEqual(asyncio.run(llm.generate_reply("이 함수의 역할을 설명해 주세요")), reply)
+                self.assertEqual(request.await_count, 1)
+
+    def test_history_discards_unsolicited_creator_intro_but_keeps_requested_answers(self) -> None:
+        history = [
+            {"role": "user", "content": "너는 누구야?"},
+            {"role": "assistant", "content": llm.CREATOR_IDENTITY_REPLY},
+            {"role": "user", "content": "누가 만들었어?"},
+            {"role": "assistant", "content": llm.CREATOR_IDENTITY_REPLY},
+            {"role": "user", "content": "고마워"},
+            {"role": "assistant", "content": "도움이 되어 기쁩니다."},
+        ]
+        self.assertEqual(llm.sanitize_conversation_history(history), [history[0], *history[2:]])
 
     def test_repairs_casual_reply_from_latest_screenshot(self) -> None:
         bad_reply = (

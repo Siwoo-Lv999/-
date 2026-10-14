@@ -120,6 +120,29 @@ class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(bad_reply, [item["content"] for item in retry["input"]])
         self.assertEqual(retry["input"][-1], {"role": "user", "content": "안녕하세요"})
 
+    async def test_openai_sends_and_saves_only_self_intro_without_creator(self) -> None:
+        bad_reply = "저는 루나입니다. 제 제작자는 루멘(Lumen, 박시우)입니다."
+        good_reply = "저는 루나입니다."
+        session = make_session(openai_response(bad_reply), openai_response(good_reply))
+        message = SimpleNamespace(
+            guild=None, channel=MagicMock(id=10),
+            author=SimpleNamespace(id=123, display_name="Lumen"),
+        )
+        with (
+            patch.object(llm.aiohttp, "ClientSession", return_value=session),
+            patch.object(main, "get_session_record", new_callable=AsyncMock, return_value={"messages": []}),
+            patch.object(main, "send_reply", new_callable=AsyncMock) as send,
+            patch.object(main, "save_exchange", new_callable=AsyncMock) as save,
+        ):
+            await main.process_conversation_message(message, "너는 누구야?")
+        self.assertEqual(session.post.call_count, 2)
+        send.assert_awaited_once_with(message, good_reply)
+        save.assert_awaited_once()
+        self.assertEqual(save.await_args.args[-2:], ("너는 누구야?", good_reply))
+        retry = session.post.call_args.kwargs["json"]
+        self.assertIn(llm.CREATOR_MENTION_REPAIR_INSTRUCTION, retry["instructions"])
+        self.assertNotIn(bad_reply, [item["content"] for item in retry["input"]])
+
     async def test_openai_security_guards_apply_before_and_after_request(self) -> None:
         with patch.object(llm, "_post_openai", new_callable=AsyncMock) as cloud:
             self.assertEqual(await llm.generate_reply("<unused8>"), SYSTEM_ACCESS_REJECT_REPLY)
